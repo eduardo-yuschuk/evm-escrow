@@ -143,9 +143,23 @@ Una prueba descartable verificó el flujo básico antes de pasar a la fase 2.
 **Output:** benchmark de gas con snapshots, `.gas-snapshot`, `docs/gas.md`, imagen y servicio de Slither, y `docs/slither.md`. El contrato solo cambió en un comentario de Slither.
 
 - **Gas verificado contra una cadena.** Antes de documentar los números del benchmark, la IA mandó las mismas transacciones a Anvil y comparó el `gasUsed` de los recibos: coinciden exactamente. La única diferencia, en `recoverExpired`, se explicó por un refund de 4.800 (en Anvil era el último escrow del contrato).
-- **Optimizaciones medidas, no aplicadas.** Se midieron 7 variantes sobre una copia del contrato. Ninguna se aplicó, porque el contrato ya estaba revisado punto por punto. Las dos que podrían valer la pena (`via_ir` y `unchecked`) quedan para que decida el autor.
+- **Optimizaciones medidas, no aplicadas.** Se midieron 7 variantes sobre una copia del contrato. Ninguna se aplicó, porque el contrato ya estaba revisado punto por punto. Las dos que podrían valer la pena (`via_ir` y `unchecked`) se le presentaron al autor, que las descartó: "no vale la pena aplicar esos cambios".
 - **Versiones de Slither.** `pip freeze` traía dependencias publicadas después del 29/09/2026. Se re-resolvieron con `uv --exclude-newer` y se fijaron con hashes. Por el mismo criterio, se usó Python 3.12.14 y no 3.12.15 (publicado el 01/10/2026).
 - **Efecto colateral evitado.** crytic-compile corre `forge clean` y `--force` sobre el proyecto. Se redirigieron sus artefactos dentro del contenedor para no borrar el `out/` y el `cache/` del servicio `forge`.
 - **Limitación de Slither descubierta con una prueba de cordura.** Con una reentrada inyectada en `confirm`, Slither reportó 0 hallazgos. La IA verificó la causa: OZ 5.7 hace la llamada de `safeTransfer` en assembly, y Slither no la ve. Con `transfer` directo, sí la detecta. Quedó documentado que el "0 hallazgos" de Slither no cubre reentrada en este contrato.
 - **Deprecación detectada.** `vm.snapshotGasLastCall` emitía un aviso: está reemplazado por `vm.snapshotGasLastFrame`. Se cambió y los valores no se movieron.
+
+## 14. Fase 5: deploy y ABI
+
+> no vale la pena aplicar esos cambios, seguí con la fase 5
+
+El autor descartó `via_ir` y `unchecked`, y quedó registrado en `docs/gas.md` y el ROADMAP.
+
+**Output:** `script/Deploy.s.sol`, el archivo `deployments/<chainId>.json`, `npm run abi` y `api/src/generated/contracts.ts`.
+
+- **Hash del bloque inicial.** Antes de escribir el script, la IA comprobó en Anvil qué ve un `forge script`. `block.number` es el último bloque minado y `blockhash(block.number)` devuelve cero. Se probaron `vm.rpcJson` y `keccak256(vm.getRawBlockHeader(n))`: los dos dan el hash real, incluso en el bloque 0, y se eligió el segundo por simple. Esto evita leer los recibos del broadcast en un segundo paso.
+- **Ventanas por variables de entorno.** El script ya sirve para la demo en Sepolia de *Pendientes decididos*, sin cambios.
+- **Mount de solo lectura.** Para que `npm run abi` lea los artefactos se monta `./contracts` completo y no `./contracts/out`. Si `out/` no existiera, Docker crearía la carpeta como root y rompería `forge build` en Docker clásico.
+- **Reproducibilidad del ABI.** Se verificó que el archivo generado no cambia después de `forge clean` + `build`, de `forge coverage` y de Slither, que es la condición para que el chequeo de CI no dé falsos positivos.
+- **Tipado.** Con un archivo descartable se comprobó que viem infiere los tipos de `decodeEventLog` y `encodeFunctionData` desde el ABI generado, y que rechaza una función inexistente.
 

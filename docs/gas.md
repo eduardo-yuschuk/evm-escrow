@@ -55,16 +55,16 @@ Cada variante se aplicó sobre una copia del contrato, se corrió el benchmark y
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | `amount uint96` junto a `beneficiary` (3 slots) | −22.059 | +35 | −2.074 | +35 | +35 | +89 B | Descartada: limita los montos a ~7,9e28 unidades |
 | Borrar `beneficiary`, `token` y `amount` al resolver | 0 | −1.147 | −3.163 | — | — | +98 B | Descartada: `getEscrow` deja de devolver los datos de un escrow resuelto |
-| `via_ir = true` | −983 | −755 | −563 | −569 | −761 | −848 B | No aplicada: ahorro de 0,7 % a 1,6 %; a decidir |
+| `via_ir = true` | −983 | −755 | −563 | −569 | −761 | −848 B | Descartada por el autor: ahorro de 0,7 % a 1,6 % |
 | `optimizer_runs` de 10.000 (igual con 1.000.000) | −465 | −247 | −269 | −269 | −247 | +1.573 B | Descartada: ahorro menor que `via_ir` y bytecode un 39 % más grande |
 | Sin medir lo recibido (`amount` directo) | −1.956 | 0 | 0 | 0 | 0 | −296 B | Descartada: es el costo del soporte de fee-on-transfer (decisión 7) |
 | Sin el chequeo `token.code.length` | −140 | 0 | 0 | 0 | 0 | −53 B | Descartada: da un error claro en lugar de un revert sin motivo |
-| `unchecked { ++escrowCount }` | −52 | 0 | 0 | 0 | 0 | −30 B | No aplicada: 0,04 %; a decidir |
+| `unchecked { ++escrowCount }` | −52 | 0 | 0 | 0 | 0 | −30 B | Descartada por el autor: 0,04 % |
 
 Notas sobre las variantes:
 - **`uint96`:** `confirm` ahorra una lectura en frío porque `beneficiary` y `amount` quedan en el mismo slot. Las otras resoluciones pagan al `sender`, que está en el slot 0, así que no ahorran lecturas y suman 35 de enmascarado.
 - **Borrar storage:** se midió en `cancel` y `confirm`. Con un beneficiary sin saldo previo, `confirm` ahorra 5.598. El refund de EIP-3529 tiene un tope del 20 % del gas de la transacción.
-- **`via_ir`:** es la única variante que mejora todo: gas y tamaño. Cambia el pipeline del compilador con el que se revisó y testeó el contrato, y compila más lento. Queda como decisión del autor.
+- **`via_ir`:** es la única variante que mejora todo: gas y tamaño. Pero el ahorro es menor al 2 %, cambia el pipeline del compilador con el que se revisó y testeó el contrato, y compila más lento. El autor decidió no aplicarla, junto con `unchecked`: no vale la pena.
 
 **Ya aplicadas desde el diseño:**
 - **`ReentrancyGuardTransient`:** ~1.900 a ~4.700 por llamada contra `ReentrancyGuard`. Ver la medición en el [README](../README.md#guard-de-reentrada-reentrancyguardtransient).
