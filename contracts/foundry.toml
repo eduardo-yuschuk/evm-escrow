@@ -31,6 +31,11 @@ fail_on_revert = false
 [fmt]
 line_length = 120
 
+[lint]
+# Time windows are the core of the contract. Validators can only skew block.timestamp by a few
+# seconds, which is irrelevant for 2-hour and 7-day windows.
+exclude_lints = ["block-timestamp"]
+
 [soldeer]
 remappings_generate = false
 remappings_regenerate = false
