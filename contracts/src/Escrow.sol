@@ -67,6 +67,8 @@ contract Escrow is IEscrow, ReentrancyGuardTransient {
         uint256 balanceBefore = erc20.balanceOf(address(this));
         erc20.safeTransferFrom(msg.sender, address(this), amount);
         uint256 received = erc20.balanceOf(address(this)) - balanceBefore;
+        // Intended: zero is exactly the case to reject (see docs/slither.md).
+        // slither-disable-next-line incorrect-equality
         if (received == 0) revert NothingReceived();
 
         id = ++escrowCount;

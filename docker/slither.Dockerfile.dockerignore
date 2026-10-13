@@ -1,0 +1,4 @@
+# The Slither image only needs these two files from the repository root.
+*
+!contracts/docker-entrypoint.sh
+!docker/slither.requirements.txt

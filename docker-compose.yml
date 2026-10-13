@@ -2,7 +2,7 @@ name: evm-escrow
 
 services:
   # Tools ("tools" profile): not started by `docker compose up`.
-  # Usage: docker compose run --rm forge test | docker compose run --rm npm run lint
+  # Usage: docker compose run --rm forge test | docker compose run --rm slither | docker compose run --rm npm run lint
 
   forge:
     profiles: [tools]
@@ -14,6 +14,24 @@ services:
     user: root
     entrypoint: [forge-entrypoint, forge]
     command: [build]
+    volumes:
+      - ./contracts:/app
+
+  slither:
+    profiles: [tools]
+    build:
+      context: .
+      dockerfile: docker/slither.Dockerfile
+    image: evm-escrow/slither:dev
+    # Starts as root; the entrypoint drops to the owner of ./contracts.
+    user: root
+    entrypoint: [forge-entrypoint, slither]
+    command: [., --config-file, slither.config.json]
+    environment:
+      # crytic-compile runs `forge clean` and `forge build --force`: keep its artifacts inside the
+      # container so the forge service's out/ and cache/ are left alone.
+      FOUNDRY_OUT: /tmp/slither/out
+      FOUNDRY_CACHE_PATH: /tmp/slither/cache
     volumes:
       - ./contracts:/app
 
