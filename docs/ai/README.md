@@ -136,3 +136,16 @@ Una prueba descartable verificó el flujo básico antes de pasar a la fase 2.
 - **Verificación por mutaciones.** Se introdujeron 10 bugs, uno por vez, corriendo solo la suite de invariantes, y los 10 la hicieron fallar. El detalle está en el ROADMAP, fase 3.
 - **Invariante más fuerte que el pedido.** Además de `balanceOf >= Σ pendientes` (decisión 8 del README), se verifica la contabilidad exacta con donaciones: `balanceOf == depositado − pagado + donado`.
 
+## 13. Fase 4: gas y Slither
+
+> implementá la fase 4: reporte de gas y Slither
+
+**Output:** benchmark de gas con snapshots, `.gas-snapshot`, `docs/gas.md`, imagen y servicio de Slither, y `docs/slither.md`. El contrato solo cambió en un comentario de Slither.
+
+- **Gas verificado contra una cadena.** Antes de documentar los números del benchmark, la IA mandó las mismas transacciones a Anvil y comparó el `gasUsed` de los recibos: coinciden exactamente. La única diferencia, en `recoverExpired`, se explicó por un refund de 4.800 (en Anvil era el último escrow del contrato).
+- **Optimizaciones medidas, no aplicadas.** Se midieron 7 variantes sobre una copia del contrato. Ninguna se aplicó, porque el contrato ya estaba revisado punto por punto. Las dos que podrían valer la pena (`via_ir` y `unchecked`) quedan para que decida el autor.
+- **Versiones de Slither.** `pip freeze` traía dependencias publicadas después del 29/09/2026. Se re-resolvieron con `uv --exclude-newer` y se fijaron con hashes. Por el mismo criterio, se usó Python 3.12.14 y no 3.12.15 (publicado el 01/10/2026).
+- **Efecto colateral evitado.** crytic-compile corre `forge clean` y `--force` sobre el proyecto. Se redirigieron sus artefactos dentro del contenedor para no borrar el `out/` y el `cache/` del servicio `forge`.
+- **Limitación de Slither descubierta con una prueba de cordura.** Con una reentrada inyectada en `confirm`, Slither reportó 0 hallazgos. La IA verificó la causa: OZ 5.7 hace la llamada de `safeTransfer` en assembly, y Slither no la ve. Con `transfer` directo, sí la detecta. Quedó documentado que el "0 hallazgos" de Slither no cubre reentrada en este contrato.
+- **Deprecación detectada.** `vm.snapshotGasLastCall` emitía un aviso: está reemplazado por `vm.snapshotGasLastFrame`. Se cambió y los valores no se movieron.
+
