@@ -112,3 +112,14 @@ Una prueba descartable verificó el flujo básico antes de pasar a la fase 2.
 7. **Tope de `ttl` en el constructor.** La IA presentó tres opciones: A (sin tope), B (`MAX_TTL`) y C (constantes en lugar de `immutable`), y recomendó A.
    - **El autor descartó C:** no poder hacer una demo en testnet con ventanas cortas no es aceptable.
    - Se mantiene A, con el análisis documentado en el README: el overflow solo bloquea la creación y nunca los escrows existentes, y `TTL()` es público.
+
+## 11. Fase 2: tests del contrato
+
+> vamos con la fase 2
+
+**Output:** 61 tests en 4 suites, con 7 mocks y una base común. Cobertura del 100 % en `Escrow.sol`.
+
+**Verificación por mutaciones.** Como todos los tests pasaron al primer intento, la IA introdujo 10 bugs a mano para comprobar que la suite los detecta. Detectó los 10.
+- **Una mutación expuso un test débil.** Al quitar `nonReentrant` de `createEscrow`, el test de reentrada fallaba por falta de allowance y no por el ataque.
+- **Se reescribió con un contrato atacante** que es el sender y reentra desde el hook, como en ERC-777. Así reproduce el doble conteo real: registra 300 por 200 depositados sin el guard.
+- **Otra mutación mostró defensa en profundidad:** sin guard en `confirm`, la reentrada igual falla por CEI (`NotPending`).
