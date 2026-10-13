@@ -1,0 +1,9 @@
+{
+  "cancel": "48971",
+  "confirm": "51026",
+  "confirm (beneficiary without balance)": "68126",
+  "createEscrow": "141000",
+  "createEscrow (first escrow of the contract)": "175200",
+  "recoverExpired": "49018",
+  "reject": "50998"
+}
