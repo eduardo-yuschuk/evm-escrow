@@ -123,3 +123,16 @@ Una prueba descartable verificó el flujo básico antes de pasar a la fase 2.
 - **Una mutación expuso un test débil.** Al quitar `nonReentrant` de `createEscrow`, el test de reentrada fallaba por falta de allowance y no por el ataque.
 - **Se reescribió con un contrato atacante** que es el sender y reentra desde el hook, como en ERC-777. Así reproduce el doble conteo real: registra 300 por 200 depositados sin el guard.
 - **Otra mutación mostró defensa en profundidad:** sin guard en `confirm`, la reentrada igual falla por CEI (`NotPending`).
+
+## 12. Fase 3: fuzz e invariantes
+
+> vamos con la fase 3
+
+**Output:** 10 fuzz unitarios y una suite de 5 invariantes sobre un handler con modelo de referencia. En total quedan 72 tests en verde, con el perfil por defecto y con el `ci`.
+
+- **Modelo de referencia en el handler.** En lugar de solo acumular *ghost variables*, el handler predice el resultado de cada resolución (éxito o el error exacto) a partir de las reglas de `IEscrow` y lo compara con el contrato. Por eso se cambió `fail_on_revert` a `true` en `foundry.toml`, que en la fase 0 había quedado en `false`.
+- **Primer ajuste por cobertura.** En la primera versión, la mayoría de las resoluciones apuntaban a ids ya resueltos o caían fuera de la ventana, y había entre 0 y 3 éxitos por acción en cada run. Se sesgó la elección de ids hacia escrows pendientes (3 de cada 4 llamadas) y se acortaron los `warp` a 1 día como máximo. Ahora casi todos los escrows creados en cada run terminan resueltos. El techo es la cantidad de creaciones, porque Foundry elige los selectores de forma uniforme.
+- **Límites exactos.** Los `warp` aleatorios casi nunca caen en un deadline, así que se agregó `warpToDeadline` (−1 s, exacto o +1 s). Con eso, la suite de invariantes sola detecta los tres errores de comparación (`>=` por `>`, `<` por `<=`).
+- **Verificación por mutaciones.** Se introdujeron 10 bugs, uno por vez, corriendo solo la suite de invariantes, y los 10 la hicieron fallar. El detalle está en el ROADMAP, fase 3.
+- **Invariante más fuerte que el pedido.** Además de `balanceOf >= Σ pendientes` (decisión 8 del README), se verifica la contabilidad exacta con donaciones: `balanceOf == depositado − pagado + donado`.
+

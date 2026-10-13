@@ -14,10 +14,12 @@ fs_permissions = [{ access = "read-write", path = "./deployments" }]
 [profile.default.fuzz]
 runs = 256
 
+# The invariant handler wraps every call and checks the expected outcome itself, so any revert that
+# reaches the fuzzer is a bug (in the contract or in the handler).
 [profile.default.invariant]
 runs = 256
 depth = 50
-fail_on_revert = false
+fail_on_revert = true
 
 # FOUNDRY_PROFILE=ci: more fuzz and invariant runs.
 [profile.ci.fuzz]
@@ -26,7 +28,7 @@ runs = 10000
 [profile.ci.invariant]
 runs = 512
 depth = 100
-fail_on_revert = false
+fail_on_revert = true
 
 [fmt]
 line_length = 120
