@@ -45,5 +45,10 @@ services:
     user: root
     entrypoint: [api-entrypoint, npm]
     command: [test]
+    environment:
+      CONTRACTS_OUT: /contracts/out
     volumes:
       - ./api:/app
+      # Read-only, for `npm run abi`. The whole folder, because it always exists: a missing bind
+      # source such as contracts/out would be created by Docker owned by root.
+      - ./contracts:/contracts:ro
