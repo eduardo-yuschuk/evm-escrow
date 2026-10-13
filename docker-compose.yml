@@ -1,0 +1,31 @@
+name: evm-escrow
+
+services:
+  # Tools ("tools" profile): not started by `docker compose up`.
+  # Usage: docker compose run --rm forge test | docker compose run --rm npm run lint
+
+  forge:
+    profiles: [tools]
+    build:
+      context: ./contracts
+      target: deps
+    image: evm-escrow/contracts:deps
+    # Starts as root; the entrypoint drops to the owner of ./contracts.
+    user: root
+    entrypoint: [forge-entrypoint, forge]
+    command: [build]
+    volumes:
+      - ./contracts:/app
+
+  npm:
+    profiles: [tools]
+    build:
+      context: ./api
+      target: dev
+    image: evm-escrow/api:dev
+    # Starts as root; the entrypoint drops to the owner of ./api.
+    user: root
+    entrypoint: [api-entrypoint, npm]
+    command: [test]
+    volumes:
+      - ./api:/app
