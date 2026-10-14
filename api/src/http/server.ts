@@ -17,7 +17,10 @@ import { HttpError } from "./errors.js";
 import { escrowRoutes } from "./escrows.js";
 import { healthRoutes, type HealthOptions } from "./health.js";
 
-/** One log line per request, when it completes. Health checks, frequent and boring, go at debug. */
+/**
+ * One log line per request, when it completes. Passing health checks, frequent and boring, go at
+ * debug; a failing one is logged like any other request.
+ */
 class RequestLog extends LogController {
   override incomingRequest(): void {
     // Only the completion is logged.
@@ -41,10 +44,8 @@ class RequestLog extends LogController {
     if (error) {
       reply.log.error({ ...details, err: error }, "request errored");
     } else {
-      reply.log[request.routeOptions.url === "/health" ? "debug" : "info"](
-        details,
-        "request completed",
-      );
+      const passingHealthCheck = request.routeOptions.url === "/health" && reply.statusCode === 200;
+      reply.log[passingHealthCheck ? "debug" : "info"](details, "request completed");
     }
   }
 }
