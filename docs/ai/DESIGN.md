@@ -236,20 +236,62 @@ Se descartó empaquetar `amount` como `uint96` junto a `beneficiary` para bajar 
 
 ### Indexador
 
+El código está en [`api/src/indexer/`](../../api/src/indexer/) y el esquema en [`api/migrations/`](../../api/migrations/).
+
 - **Lectura por polling** con `eth_getLogs` en rangos acotados, desde `checkpoint + 1` hasta `head - CONFIRMATIONS`. Se eligió en lugar de una suscripción WebSocket porque permite retomar de forma determinística y no pierde eventos si el socket se corta.
+  - El filtro es la dirección del contrato más los topics de sus 5 eventos.
+  - Los logs se decodifican en modo estricto: uno que no coincide con el ABI es un error. `getLogs` de viem, en cambio, lo descartaría sin avisar.
 - **Atomicidad.** Por cada rango, en **una sola transacción de DB** se insertan los eventos crudos, se aplican a la proyección `escrows` y se avanza el checkpoint. Si el proceso muere a mitad de camino, no queda nada a medias.
+  - La transacción bloquea la fila del checkpoint y verifica que no se movió desde que se leyó el rango. Si otro proceso la movió, el rango se descarta y se vuelve a leer.
 - **Idempotencia.**
-  - La tabla `events` tiene `UNIQUE (tx_hash, log_index)`, y un evento repetido se ignora con `ON CONFLICT DO NOTHING`.
-  - `EscrowCreated` hace upsert por `id`.
-  - Las transiciones solo se aplican si el escrow sigue `Pending`. Reprocesar un rango no duplica ni corrompe nada.
-- **Reanudación.** El checkpoint (`last_indexed_block`) vive en Postgres. Al arrancar se lee de ahí o, la primera vez, del `startBlock` del [archivo de deploy](#deploy).
-- **Cambio de cadena.** Anvil es efímero, mientras que Postgres puede conservar datos entre reinicios del stack.
-  - Por eso `indexer_state` guarda `chainId`, la dirección del contrato y `startBlockHash`, y al arrancar los compara con la cadena.
-  - Si no coinciden, con `RESET_ON_CHAIN_MISMATCH=true` (default en compose) se vacía la proyección y se reindexa. Si no, el proceso aborta con un error claro.
+  - La tabla `events` tiene clave primaria `(tx_hash, log_index)`. Los eventos se insertan con `ON CONFLICT DO NOTHING … RETURNING`, y solo los que devuelve, los nuevos, se aplican a la proyección.
+  - El proyector, `applyEvent(estado, evento) → mutación`, es una función pura. `EscrowCreated` crea el escrow si no existe, y las resoluciones solo se aplican si sigue `Pending`. El SQL repite las dos guardas.
+  - Aplicar el mismo evento dos veces no hace nada. Una resolución de un id desconocido, o de un escrow ya resuelto por otra transacción, no puede pasar en la cadena: se loggea como error y no se aplica.
+  - Reprocesar un rango no duplica ni corrompe nada.
+- **Reanudación.** El checkpoint (`last_indexed_block`) vive en Postgres. La primera vez se inicializa con el `startBlock` del [archivo de deploy](#deploy). Se relee en cada vuelta, así que moverlo a mano hacia atrás reprocesa ese rango.
+- **Cambio de cadena.** Anvil es efímero, mientras que Postgres puede conservar datos entre reinicios del stack. Al arrancar hay dos chequeos:
+  1. **El archivo de deploy contra la cadena:** chain id, hash del `startBlock` y código en la dirección del contrato. Si no coinciden, por ejemplo porque Anvil se reinició y nadie volvió a deployar, el proceso aborta siempre: el archivo no describe esta cadena.
+  2. **La DB contra el archivo de deploy:** `indexer_state` guarda `chainId`, la dirección del contrato, `startBlock` y `startBlockHash`. Si la DB fue construida desde otra cadena o contrato, con `RESET_ON_CHAIN_MISMATCH=true` (default en compose) se vacía la proyección y se reindexa. Si no, el proceso aborta con un error que dice cómo seguir.
+  - Durante el loop, si el head de la cadena queda por debajo del checkpoint, se repite el primer chequeo: un nodo RPC atrasado se espera y otra cadena es fatal.
 - **Reorgs: esperar N confirmaciones.** Solo se indexan bloques con al menos `CONFIRMATIONS` bloques encima.
   - Supuesto: no hay reorgs más profundos que N. Con eso el checkpoint nunca retrocede y la clave `(tx_hash, log_index)` es estable.
   - Valores por defecto: `CONFIRMATIONS=0` en Anvil, porque no hay reorgs y con automine no se minan bloques sin transacciones, así que con N > 0 los últimos eventos nunca se confirmarían. En una testnet o mainnet, alrededor de 12, o usar el tag `finalized`.
   - Costo: la API refleja la cadena con unos N bloques de atraso.
+- **Timestamps.** `created_at` y `resolved_at` son el timestamp del bloque del evento. Sale del campo `blockTimestamp` del log, que Anvil y Geth reciente incluyen, o de `eth_getBlockByNumber`, una vez por bloque, si el nodo no lo manda.
+- **Fallos.** Cada vuelta del loop, y cada paso del arranque, se reintenta con backoff exponencial de 0,5 s a 30 s, y cada fallo queda en el log.
+  - El cliente de viem va sin reintentos propios (`retryCount: 0`). Con ellos, un RPC que no responde tardaba más de 40 s en dar un error visible.
+  - Los errores irrecuperables no se reintentan y el proceso sale con código 1: configuración inválida, archivo de deploy ausente, migración editada o cadena distinta.
+- **Apagado.** Con SIGTERM (`docker compose stop`) o SIGINT, se cancelan las requests al RPC en curso y se deja terminar la transacción de DB en curso. Un rango a medio leer se descarta y se vuelve a leer al arrancar. Una segunda señal sale de inmediato.
+- **Logs** en JSON, uno por línea, con pino.
+
+#### Configuración
+
+| Variable | Default | Uso |
+| --- | --- | --- |
+| `RPC_URL` | obligatoria | Nodo JSON-RPC |
+| `DATABASE_URL` | obligatoria | Postgres |
+| `DEPLOYMENTS_FILE` | obligatoria | `deployments/<chainId>.json` escrito por el [deploy](#deploy) |
+| `CONFIRMATIONS` | `0` | Bloques encima de un bloque para indexarlo |
+| `BATCH_SIZE` | `1000` | Bloques máximos por `eth_getLogs` y por transacción de DB |
+| `POLL_INTERVAL_MS` | `1000` | Espera entre consultas cuando no quedan bloques por indexar |
+| `RESET_ON_CHAIN_MISMATCH` | `false` | Vaciar y reindexar una DB de otra cadena o contrato, en lugar de abortar |
+| `LOG_LEVEL` | `info` | Nivel de pino |
+
+Se validan con zod al arrancar. Una variable vacía toma el default.
+
+#### Esquema
+
+- **Migraciones** SQL versionadas en `api/migrations/`, aplicadas al arrancar por un runner propio.
+  - Cada una corre en su transacción y queda registrada en `schema_migrations` con su sha256. Editar una migración ya aplicada, o correr código más viejo que la base, es un error fatal.
+  - Un `pg_advisory_lock` evita que dos procesos que arrancan juntos migren a la vez.
+- **Dominios** `address`, `bytes32` y `uint256`: la base rechaza direcciones o hashes que no estén en minúsculas y montos fuera del rango de `uint256`. Los filtros de la API comparan direcciones en minúsculas.
+- **Tablas.**
+  - `events`: un registro por log, con `block_number`, `block_hash`, `block_timestamp`, `name` y `args` en `jsonb`, donde los `uint256` van como string.
+  - `escrows`: la proyección, con `CHECK` sobre los estados y otro que exige `resolved_tx` y `resolved_at` exactamente cuando el estado es final.
+  - `indexer_state`: una sola fila con la cadena, el contrato y el checkpoint.
+- **Índices.**
+  - `(sender, id)`, `(beneficiary, id)` y `(status, id)` sirven a la vez al filtro y al orden por id del listado.
+  - Uno parcial por `expires_at` sobre los `Pending` separa `Pending` de `ExpiredRecoverable`.
 
 ### Estado derivado del tiempo
 

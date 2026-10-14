@@ -193,3 +193,17 @@ El autor descartó `via_ir` y `unchecked`, y quedó registrado en `docs/gas.md` 
 > anotemos para recordar hacer una versión final del README.md al terminar con el proyecto con una versión resumida de las decisiones de diseño. Si dejamos todo el detalle técnico completo en el README.md principal se vuelve muy abrumador. Propongo, para cuando terminemos, que el README.md principal puntee todas las decisiones de diseño pero haga referencia a la versión completa y desarrollada en DESIGN.md.
 
 **Output:** tarea agregada en la fase 12 del [ROADMAP](ROADMAP.md), dentro de *README final*. El README va a puntear todas las decisiones, una línea cada una, con vínculo a su desarrollo en [DESIGN](DESIGN.md). Así cumple con lo que pide el enunciado sin cargarlo con el detalle técnico.
+
+## 18. Fase 6: indexador
+
+> sigamos con la fase 6
+
+**Output:** configuración, migraciones, proyector, loop con checkpoint y guard de cadena en `api/src/`, más `api/migrations/0001_initial.sql`. El detalle está en el [ROADMAP](ROADMAP.md), fase 6, y el diseño en [DESIGN](DESIGN.md#indexador).
+
+- **Verificación contra una cadena real.** Los tests automatizados son de la fase 8. Mientras tanto, la IA verificó contra Anvil y Postgres con un override de compose descartable: los cuatro caminos, varios eventos en un mismo bloque, reinicio, reproceso del rango, `kill -9` a mitad de una puesta al día y caídas de Postgres y del RPC. En cada caso comparó dumps de la DB.
+- **Guard en dos pasos.** El ROADMAP preveía comparar la DB con la cadena. Se agregó un chequeo previo del archivo de deploy contra la cadena. Si Anvil se reinicia sin volver a deployar, la DB y el archivo coinciden entre sí pero no con la cadena, y sin ese chequeo el indexador se habría quedado esperando para siempre.
+- **Logs descartados en silencio.** `getLogs` de viem, en modo estricto, descarta sin avisar los logs que no puede decodificar. Se pide `eth_getLogs` directo y se decodifica con `decodeEventLog`, que en ese caso falla.
+- **Reintentos ocultos.** Con el RPC congelado, la primera prueba no mostró ningún error en 14 s: viem reintentaba 3 veces con 10 s de timeout cada una. Se apagaron sus reintentos para dejar una sola capa, la del indexador, con un log por fallo.
+- **Apagado con el RPC colgado.** Un SIGTERM en ese estado tardaba 9 s, al borde del SIGKILL de `docker compose stop`. Ahora se cancelan las requests en curso, sin perder el timeout de viem, y sale en 0,14 s.
+- **Prueba del mismo bloque.** En el primer intento, con automine apagado, se perdieron dos de tres transacciones porque cada `cast` calculaba el mismo nonce. Se repitió con nonces explícitos.
+- **Fallback de timestamps.** Anvil incluye `blockTimestamp` en los logs, así que el camino alternativo con `getBlock` no se ejercitaba. Un script descartable le sacó el campo a la respuesta y comprobó que da los mismos timestamps, con un `getBlock` por bloque.

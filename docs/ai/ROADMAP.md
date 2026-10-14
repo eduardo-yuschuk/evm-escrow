@@ -326,36 +326,66 @@ test/invariant/EscrowInvariants.t.sol  5 invariantes sobre el handler
 
 **Commits:** `feat(deploy): deploy script with deployments file`, `chore(api): generate typed abi and bytecode`.
 
-## Fase 6: Indexador
+## Fase 6: Indexador ✅
 
-- [ ] **Configuración** validada con zod:
-  - `RPC_URL`, `DATABASE_URL`, `DEPLOYMENTS_FILE`
-  - `CONFIRMATIONS` (0 por defecto), `BATCH_SIZE`, `POLL_INTERVAL_MS`
-  - `RESET_ON_CHAIN_MISMATCH`
-- [ ] **Migraciones SQL** versionadas, con un runner simple al arrancar:
-  - `events`: `(tx_hash, log_index)` UNIQUE, `block_number`, `block_hash`, `name` y `args jsonb`
-  - `escrows`:
-    - `id numeric` PK, `sender`, `beneficiary` y `token` en minúsculas, `amount numeric`
-    - `created_at`, `cancel_deadline` y `expires_at` como bigint
-    - `status`, `created_tx`, `resolved_tx`, `resolved_at`
-    - índices por `sender`, `beneficiary`, `status` y `expires_at`
-  - `indexer_state`: `chain_id`, `contract_address`, `start_block_hash`, `last_indexed_block`
-- [ ] **Guard de cadena** al arrancar: comparar `chain_id`, contrato y hash del bloque de deploy con la cadena. Si no coinciden (por ejemplo, Anvil se reinició y Postgres no):
-  - con `RESET_ON_CHAIN_MISMATCH=true`, vaciar la proyección y reindexar
-  - si no, abortar con un error claro
-- [ ] **Proyector puro** `applyEvent(state, event) → mutation`, sin I/O y fácil de testear:
-  - `EscrowCreated` hace upsert
-  - las resoluciones aplican `UPDATE … WHERE id = $1 AND status = 'Pending'`
-  - un evento de resolución de un id desconocido es un error que se loggea, porque no debería pasar
-- [ ] **Loop:**
-  - `to = min(head − CONFIRMATIONS, from + BATCH_SIZE − 1)`, con `getLogs` filtrado por address y los 5 eventos
-  - ordenar por `(blockNumber, logIndex)`
-  - una sola transacción de DB para insertar `events` (`ON CONFLICT DO NOTHING`), aplicar solo los eventos nuevos y avanzar el checkpoint
-  - `created_at` sale del timestamp del bloque, con cache por bloque
-- [ ] **Reintentos con backoff** ante errores de RPC o DB, y logs estructurados.
-- [ ] **Apagado ordenado** con SIGTERM: termina el batch en curso. Importa para `docker compose stop`.
+- [x] **Configuración** validada con zod (`src/config.ts`):
+  - `RPC_URL`, `DATABASE_URL` y `DEPLOYMENTS_FILE`, obligatorias
+  - `CONFIRMATIONS` (0 por defecto), `BATCH_SIZE` (1000), `POLL_INTERVAL_MS` (1000), `RESET_ON_CHAIN_MISMATCH` (`false`) y `LOG_LEVEL` (`info`)
+  - una variable vacía toma el default; un valor inválido aborta con la lista de errores
+- [x] **Migraciones SQL** versionadas en `api/migrations/`, con un runner propio al arrancar (`src/db/migrate.ts`):
+  - cada migración corre en su transacción y queda en `schema_migrations` con su sha256: editar una ya aplicada, o correr código más viejo que la base, es un error fatal
+  - `pg_advisory_lock` para que dos procesos que arrancan juntos no migren a la vez
+  - la imagen `runtime` copia `migrations/` junto a `dist/`
+  - `0001_initial.sql`:
+    - dominios `address`, `bytes32` y `uint256`: la base rechaza direcciones o hashes que no estén en minúsculas y montos fuera de rango
+    - `events`: clave primaria `(tx_hash, log_index)`, `block_number`, `block_hash`, `name` y `args jsonb`. Se agregó `block_timestamp`, así cada evento guarda todo lo que necesita la proyección.
+    - `escrows`: las columnas previstas, un `CHECK` de estados y otro que exige `resolved_tx` y `resolved_at` exactamente cuando el estado es final
+    - índices `(sender, id)`, `(beneficiary, id)` y `(status, id)`, que sirven al filtro y al orden del listado, y uno parcial por `expires_at` sobre los `Pending`, que separa `Pending` de `ExpiredRecoverable`
+    - `indexer_state`: una sola fila con `chain_id`, `contract_address`, `start_block`, `start_block_hash` y `last_indexed_block`
+- [x] **Guard de cadena** al arrancar (`src/indexer/guard.ts`), en dos pasos:
+  - **El archivo de deploy contra la cadena:** chain id, hash del `startBlock` y código en la dirección del contrato. Si no coinciden, por ejemplo porque Anvil se reinició y nadie volvió a deployar, aborta siempre: el archivo no sirve. Este paso no estaba previsto; sin él, el indexador esperaría para siempre bloques de una cadena que ya no existe.
+  - **La DB contra el archivo de deploy:** si la DB viene de otra cadena o contrato, con `RESET_ON_CHAIN_MISMATCH=true` vacía `events` y `escrows` y reindexa, y si no aborta con un error que dice cómo seguir. Todo en una transacción.
+  - Durante el loop, si el head queda por debajo del checkpoint, repite el primer paso: un nodo RPC atrasado se espera y otra cadena es fatal.
+- [x] **Proyector puro** `applyEvent(state, event) → mutation` (`src/indexer/projector.ts`):
+  - devuelve `create` si el escrow no existe, `resolve` si está `Pending` y `skip` en cualquier otro caso
+  - el mismo evento dos veces es un `skip` de nivel debug
+  - una resolución de un id desconocido, o de un escrow ya resuelto por otra transacción, es un `skip` de nivel error: se loggea y no se aplica
+  - el SQL repite las guardas: `INSERT … ON CONFLICT (id) DO NOTHING` y `UPDATE … WHERE id = $1 AND status = 'Pending'`
+- [x] **Loop** (`src/indexer/indexer.ts`):
+  - `to = min(head − CONFIRMATIONS, from + BATCH_SIZE − 1)`, con `eth_getLogs` filtrado por address y los topics de los 5 eventos
+  - decodificación estricta con `decodeEventLog`: un log que no coincide con el ABI es un error, mientras que `getLogs` de viem lo descartaría sin avisar
+  - orden por `(blockNumber, logIndex)`
+  - una transacción por batch: bloquea la fila de `indexer_state` y verifica que el checkpoint no se movió, inserta en `events` con `ON CONFLICT DO NOTHING … RETURNING`, aplica solo los eventos nuevos y avanza el checkpoint
+  - el checkpoint se relee en cada vuelta, así que moverlo a mano hacia atrás reprocesa el rango (lo usa la fase 8)
+  - timestamp del bloque: el campo `blockTimestamp` del log, que Anvil incluye, o `getBlock` una vez por bloque si el nodo no lo manda
+- [x] **Reintentos con backoff** exponencial, de 0,5 s a 30 s, en cada vuelta del loop y en cada paso del arranque, con un log por fallo.
+  - El cliente de viem va con `retryCount: 0`: con sus reintentos internos, un RPC colgado tardaba más de 40 s en dar un error visible.
+  - Los errores irrecuperables (`FatalError`) no se reintentan y el proceso sale con código 1: configuración, archivo de deploy, migración editada o cadena distinta.
+  - Logs JSON con pino. `pino` pasó a dependencia directa, con la misma versión que ya traía fastify.
+- [x] **Apagado ordenado** con SIGTERM o SIGINT:
+  - cancela las requests al RPC en curso, con un `fetchFn` que combina el timeout de viem con la señal de apagado (`AbortSignal.any`), y deja terminar la transacción de DB en curso
+  - sale con código 0, y una segunda señal sale de inmediato
+  - sin la cancelación, un SIGTERM con el RPC colgado tardaba 9 s, al borde de los 10 s que espera `docker compose stop` antes del SIGKILL
+- Los tests automatizados son de la fase 8.
 
-**Hecho cuando:** contra el Anvil de compose, crear y resolver escrows se refleja en la DB, y `docker compose restart api` no duplica ni pierde nada.
+**Verificación:** contra Anvil y Postgres levantados con un override de compose descartable, porque los servicios definitivos son de la fase 9. El contrato se deployó con el servicio `forge` y las transacciones se mandaron con `cast`.
+- Confirmar, rechazar, cancelar y vencer (`evm_increaseTime` y `recoverExpired`) quedan proyectados con `created_at`, deadlines y `resolved_at` correctos.
+- Un bloque con tres eventos (crear 6, crear 7 y cancelar 6) se proyecta bien.
+- `docker compose restart` del indexador retoma desde el checkpoint, sin duplicados.
+- Con el checkpoint forzado a 0 y el indexador corriendo, reprocesa 14 eventos, 0 nuevos, y el dump de la DB queda idéntico.
+- `kill -9` en 6 momentos de una puesta al día de 1.025 bloques con `BATCH_SIZE=1`: los eventos guardados son siempre exactamente los de los bloques hasta el checkpoint, y al reanudar la DB queda idéntica.
+- Con `CONFIRMATIONS=2`, el escrow aparece recién con 2 bloques encima.
+- **Guard de cadena:**
+  - con Anvil reiniciado mientras el indexador corre, sale con un error claro
+  - con el archivo de deploy viejo, no arranca
+  - después de redeployar, la DB vieja aborta con `RESET_ON_CHAIN_MISMATCH=false`, y se vacía y reindexa con `true`
+- Con Postgres caído unos segundos, reintenta a los 0,5, 1, 2 y 4 s, y se recupera sin perder el escrow creado mientras tanto.
+- Con el RPC sin responder, da un error de timeout a los 10 s, y un SIGTERM en ese estado sale en 0,14 s con código 0.
+- La imagen `runtime` arranca con los defaults, aplica la migración e indexa.
+- Sin `blockTimestamp` en los logs, el fallback a `getBlock` da los mismos timestamps, con un `getBlock` por bloque.
+- Una configuración inválida, un archivo de deploy inexistente, una migración editada y una resolución de un escrow ausente dan, cada uno, el error esperado.
+
+**Hecho cuando:** contra Anvil, crear y resolver escrows se refleja en la DB, y reiniciar el indexador no duplica ni pierde nada. ✅ Se verificó con el override descartable: `anvil` y `api` pasan a ser servicios de compose en la fase 9. `npm run lint`, `typecheck` y `build` pasan.
 
 **Commits:** `feat(api): db schema and migrations`, `feat(api): event projector`, `feat(api): indexer loop with checkpoint`, `feat(api): chain mismatch guard`.
 
