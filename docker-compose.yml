@@ -1,6 +1,23 @@
 name: evm-escrow
 
 services:
+  postgres:
+    image: postgres:17.11-alpine3.24
+    environment:
+      POSTGRES_USER: escrow
+      POSTGRES_PASSWORD: escrow
+      POSTGRES_DB: escrow
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Creates escrow_test, the database of the API tests, on the first start.
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      # Over TCP: while the init scripts run, Postgres only listens on its Unix socket.
+      test: [CMD, pg_isready, --host, 127.0.0.1, --username, escrow, --dbname, escrow]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+
   # Tools ("tools" profile): not started by `docker compose up`.
   # Usage: docker compose run --rm forge test | docker compose run --rm slither | docker compose run --rm npm run lint
 
@@ -45,10 +62,18 @@ services:
     user: root
     entrypoint: [api-entrypoint, npm]
     command: [test]
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       CONTRACTS_OUT: /contracts/out
+      # Integration tests: each test file migrates its own schema in this database.
+      TEST_DATABASE_URL: postgres://escrow:escrow@postgres:5432/escrow_test
     volumes:
       - ./api:/app
       # Read-only, for `npm run abi`. The whole folder, because it always exists: a missing bind
       # source such as contracts/out would be created by Docker owned by root.
       - ./contracts:/contracts:ro
+
+volumes:
+  pgdata:
