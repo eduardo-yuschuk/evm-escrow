@@ -4,8 +4,21 @@ import type { Logger } from "../logger.js";
 
 export type { Pool, PoolClient };
 
+/**
+ * A hung database (e.g. a paused container) fails the query instead of blocking it, and the
+ * shutdown, forever. Short enough that a transaction whose query and ROLLBACK both time out still
+ * ends within the 10 s that `docker compose stop` waits before killing the process.
+ */
+const TIMEOUT_MS = 3_000;
+
 export function createPool(databaseUrl: string, log: Logger): Pool {
-  const pool = new Pool({ connectionString: databaseUrl });
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    // Getting a connection: opening a new one or waiting for a free one.
+    connectionTimeoutMillis: TIMEOUT_MS,
+    // Client-side, unlike statement_timeout, so it also covers a server that does not answer.
+    query_timeout: TIMEOUT_MS,
+  });
   // An idle connection can fail (e.g. Postgres restarts). Without a listener the process would crash;
   // the pool discards the connection and the next query opens a new one.
   pool.on("error", (error) => {
