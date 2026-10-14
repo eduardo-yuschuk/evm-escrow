@@ -22,7 +22,7 @@ export interface IndexerContext {
 }
 
 /** Indexes the next range of confirmed blocks, if any. Returns true when it caught up with the chain. */
-async function indexNextBatch({
+export async function indexNextBatch({
   client,
   pool,
   deployment,
