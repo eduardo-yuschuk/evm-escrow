@@ -163,3 +163,17 @@ El autor descartó `via_ir` y `unchecked`, y quedó registrado en `docs/gas.md` 
 - **Reproducibilidad del ABI.** Se verificó que el archivo generado no cambia después de `forge clean` + `build`, de `forge coverage` y de Slither, que es la condición para que el chequeo de CI no dé falsos positivos.
 - **Tipado.** Con un archivo descartable se comprobó que viem infiere los tipos de `decodeEventLog` y `encodeFunctionData` desde el ABI generado, y que rechaza una función inexistente.
 
+
+## 15. Resumen de avances
+
+> resume lo que hicimos hasta ahora en el proyecto
+
+**Output:** resumen del estado al cierre del día 1: fases 0 a 5 terminadas, lo que falta (fases 6 a 12 y los pendientes decididos) y los cambios sin commitear.
+
+> bajame este reporte completo a docs/ai/avances/dia1.md
+
+**Output:** [`avances/dia1.md`](avances/dia1.md), con el mismo resumen fechado y adaptado como documento.
+
+> sí, agregá la entrada 15 al README de docs/ai y mantengamos registrando todos los prompts como venimos haciendo
+
+**Output:** esta entrada. Desde acá, cada prompt se registra en este archivo junto con su resultado.
