@@ -6,7 +6,7 @@ Escrow de tokens ERC-20 en Solidity, más una API/indexador en TypeScript que pr
 - **API e indexador** (`api/`): Node.js, TypeScript y viem. Indexa los eventos en Postgres y expone el estado de cada escrow por HTTP.
 - **Todo corre con Docker Compose:** nodo local (Anvil), deploy, base de datos, API, tests, análisis estático y demo.
 
-> **Estado:** el contrato, el indexador y la API HTTP están terminados. El stack completo (`docker compose up`), la demo y CI están en desarrollo; los comandos de esas secciones son los previstos.
+> **Estado:** el contrato, el indexador y la API HTTP están terminados y testeados. El stack completo (`docker compose up`), la demo y CI están en desarrollo; los comandos de esas secciones son los previstos.
 
 ## Documentación
 
@@ -72,10 +72,12 @@ docker compose run --rm slither
 ### API
 
 ```bash
-docker compose run --rm npm test            # procesamiento de eventos, idempotencia, reanudación, estado derivado
+docker compose run --rm npm test            # proyector, estado derivado, indexador contra Anvil y Postgres, endpoints
 docker compose run --rm npm run lint
 docker compose run --rm npm run typecheck
 ```
+
+`npm` levanta `postgres` si no está corriendo, y queda corriendo hasta `docker compose down`. Los tests usan su propia base, `escrow_test`, y cada archivo levanta su propio Anvil.
 
 ### ABI tipado
 

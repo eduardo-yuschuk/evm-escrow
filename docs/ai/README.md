@@ -246,3 +246,19 @@ Al repasar el manejo de errores apareció un bug que no se había probado en la 
 - **Logs:** el log de cada `503` incluye la causa (`Cannot read the database: Query read timeout`). Un `/health` degradado solo por lag queda en `info`, y los `200` no aparecen.
 
 `typecheck`, `lint` y `build` pasan. Se actualizaron [DESIGN](DESIGN.md#endpoints) (códigos, logs y *Postgres colgado* en *Proceso y configuración*) y la fase 7 del [ROADMAP](ROADMAP.md).
+
+## 21. Fase 8: tests de la API
+
+> seguimos con la fase 8
+
+**Output:** 79 tests en `api/test/`: unitarios del proyector y de `toView`, integración del indexador y del guard contra Anvil y Postgres reales, y tests HTTP con `fastify.inject`. Corren con `docker compose run --rm npm test` en unos 6 s. El detalle está en el [ROADMAP](ROADMAP.md), fase 8, y el enfoque en [DESIGN](DESIGN.md#ejecución-y-tests).
+
+- **Postgres adelantado.** Los tests necesitan Postgres, así que el servicio `postgres` y `docker/postgres/init.sql`, previstos para la fase 9, se agregaron en esta. Los tests usan la base `escrow_test`, aparte de la del stack. El healthcheck va por TCP, porque durante la inicialización Postgres solo escucha en su socket Unix y un chequeo por socket daría sano antes de tiempo.
+- **La cadena como oráculo.** Los tests de integración no comparan contra valores esperados escritos a mano. Leen los logs del contrato y `getEscrow` y exigen que la DB coincida exactamente.
+- **Kill real.** "Indexar, matar y reanudar" se prueba con un proceso indexador real, que se mata con SIGKILL dos veces a mitad de camino. Como un SIGKILL no cae siempre a mitad de una transacción, un trigger de Postgres hace fallar un batch después de que guardó sus eventos, y así la atomicidad se prueba de forma determinística.
+- **Comprobación de los tests con mutaciones.** Que todo pasara al primer intento no alcanzaba como prueba. La IA introdujo a mano 19 bugs en `src/`, uno por vez, y los tests detectaron todos. En el camino aparecieron cuatro cosas:
+  - **Una mutación equivalente.** Cambiar `ROLLBACK` por `COMMIT` no rompe nada, porque en Postgres un `COMMIT` sobre una transacción abortada hace rollback. Se reemplazó por un batch sin `BEGIN`.
+  - **Un hueco.** Ningún test cubría el lag negativo de `/health`, que fue el bug de la fase 7. Se agregó el test.
+  - **Un test que colgaba la corrida.** Con la reanudación rota, el test de kill esperaba para siempre a su proceso hijo. Ahora tiene un tope de espera y mata a sus hijos si falla.
+  - **Un cache inesperado.** El cliente de viem cachea `getBlockNumber` durante el `pollingInterval`, así que un test leía un head viejo. El cliente de los tests va sin cache.
+- **Estabilidad.** 5 corridas seguidas en verde, una con un solo núcleo de CPU y otra desde un volumen de Postgres nuevo.

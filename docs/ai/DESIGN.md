@@ -47,6 +47,7 @@ Versiones fijadas:
 | forge-std / OpenZeppelin Contracts | `1.16.2` / `5.7.0` (`soldeer.lock`) |
 | Node (imagen) | `node:24.21.0-bookworm-slim` |
 | Dependencias npm | exactas, en `package-lock.json` |
+| Postgres (imagen) | `postgres:17.11-alpine3.24` |
 
 Estructura prevista del repo:
 
@@ -77,7 +78,13 @@ Los servicios de herramientas usan `profiles`, así que `docker compose up` no l
 ## Ejecución y tests
 
 - **Código montado.** `forge` y `npm` montan el código del host, así que corren sobre la copia de trabajo actual sin reconstruir imágenes.
-- **Tests de integración de la API.** Levantan su propio Anvil efímero (el binario va incluido en la imagen) y usan la base `escrow_test` del servicio `postgres`. No tocan el stack principal.
+- **Tests de la API** (`api/test/`). Los unitarios cubren el proyector y `toView`. Los de integración corren contra Anvil y Postgres reales, sin tocar el stack principal:
+  - **Anvil propio.** Cada archivo levanta un Anvil efímero en un puerto libre, con el binario incluido en la imagen, y deploya con el bytecode generado.
+  - **Schema propio.** Cada archivo crea un schema en la base `escrow_test` del servicio `postgres` y lo usa por `search_path`, así los archivos corren en paralelo.
+  - **Oráculo: la cadena.** Los eventos guardados tienen que ser exactamente los logs del contrato. Cada fila de `escrows` tiene que coincidir con `getEscrow`, más las transacciones y los timestamps de sus logs.
+  - **Kill real.** Un proceso indexador (`MODE=indexer`) se mata con SIGKILL a mitad de camino y se reanuda. Un trigger, además, hace fallar un batch después de que guardó sus eventos, para comprobar que la transacción no deja nada.
+  - **HTTP.** Los endpoints se prueban con `fastify.inject`, sin abrir puertos. Los límites de tiempo se prueban al segundo, con `evm_setNextBlockTimestamp`.
+  - **Mutaciones.** Se comprobó que los tests detectan 19 bugs introducidos a mano. El detalle está en la fase 8 del [ROADMAP](ROADMAP.md).
 - **Fuzz e invariantes.** El handler de invariantes mantiene un modelo de referencia de cada escrow, predice el resultado de cada llamada (éxito o el error exacto) y lo compara con el contrato. Por eso corre con `fail_on_revert = true`. El perfil por defecto hace 256 runs; el perfil `ci` hace 10.000 runs de fuzz y 512 × 100 de invariantes.
 - **Gas.** Cada `forge test` reescribe `contracts/snapshots/EscrowGasTest.json` con el gas de cada operación; los cambios aparecen en el diff. Ver [`docs/gas.md`](../gas.md).
 - **Dependencias.** La primera vez, o cuando cambia el lockfile, el entrypoint instala las dependencias desde el contenedor en `api/node_modules/` y `contracts/dependencies/`. Las dos carpetas están ignoradas por git.

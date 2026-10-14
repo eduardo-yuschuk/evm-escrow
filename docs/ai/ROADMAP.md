@@ -463,24 +463,71 @@ test/invariant/EscrowInvariants.t.sol  5 invariantes sobre el handler
 
 **Commits:** `feat(api): chain clock and derived status`, `feat(api): escrow and health endpoints`, `feat(api): run the indexer and the api in one process`. El plan original separaba los endpoints de escrows y el de health, pero comparten `buildServer` y cada commit tiene que compilar solo.
 
-## Fase 8: Tests de la API
+## Fase 8: Tests de la API ✅
 
-Se corren con `docker compose run --rm npm test`. El servicio `npm` depende de `postgres` sano y usa la base `escrow_test`, creada por `docker/postgres/init.sql`. Los tests de integración levantan su propio `anvil` efímero en un puerto libre, con el binario incluido en la imagen `api:dev`, y deployan con el bytecode generado.
+Se corren con `docker compose run --rm npm test`: 79 tests en 6 archivos, en unos 6 s. El servicio `npm` depende de `postgres` sano y usa la base `escrow_test`, creada por `docker/postgres/init.sql`. Los tests de integración levantan su propio `anvil` efímero en un puerto libre, con el binario incluido en la imagen `api:dev`, y deployan con el bytecode generado.
 
-- [ ] **Unitarios del proyector:** cada evento, el mismo evento dos veces, una resolución sobre un estado final ignorada, y un evento de resolución desconocido.
-- [ ] **Unitarios de `toView`:** límites `now = cancelDeadline − 1`, `= cancelDeadline`, `= expiresAt − 1` y `= expiresAt`, para cada flag y para `ExpiredRecoverable`.
-- [ ] **Integración con Anvil y Postgres reales:**
-  - indexar, matar y reanudar: sin pérdidas ni duplicados
-  - reprocesar un rango ya indexado, forzando el checkpoint hacia atrás: la DB queda idéntica
-  - batch con varios eventos del mismo escrow en el mismo bloque
-  - con `CONFIRMATIONS = N`, los bloques no confirmados no se indexan
-  - guard de cadena: reiniciar Anvil con la misma DB dispara un reset o un abort, según el flag
-- [ ] **Aislamiento:** cada suite usa su propio schema o trunca las tablas, para que los tests sean independientes y se puedan correr de nuevo.
-- [ ] **Tests HTTP** con `fastify.inject`: filtros, paginación, 400, 404, y que `ExpiredRecoverable` aparezca después de `evm_increaseTime` sin transacción de recover.
+```
+test/unit/projector.test.ts        19: cada evento, eventos repetidos y conflictos
+test/unit/view.test.ts             10: límites de tiempo, estados finales y serialización
+test/integration/indexer.test.ts    6: caminos, mismo bloque, confirmaciones, reproceso, falla a mitad de batch, kill
+test/integration/guard.test.ts      4: reinicio de Anvil con la misma DB
+test/integration/http.test.ts      38: endpoints con fastify.inject
+test/integration/expiry.test.ts     2: estado derivado mientras avanza el reloj de la cadena
+test/support/                      Anvil, un schema propio en Postgres y el oráculo contra la cadena
+```
 
-**Hecho cuando:** `docker compose run --rm npm test`, `npm run lint` y `npm run typecheck` están en verde.
+- [x] **Servicio `postgres`**, adelantado de la fase 9 porque los tests lo necesitan:
+  - imagen `postgres:17.11-alpine3.24` y volumen `pgdata`
+  - `init.sql` crea `escrow_test`, aparte de la base `escrow` del stack
+  - healthcheck con `pg_isready` por TCP: mientras corren los scripts de init, Postgres solo escucha en su socket Unix, así que un chequeo por socket daría sano antes de tiempo
+- [x] **Unitarios del proyector:**
+  - cada evento
+  - el mismo evento dos veces, incluida la creación de un escrow que ya se resolvió
+  - una resolución sobre un estado final, ya sea con el mismo estado y otra transacción o con otro estado
+  - una resolución de un escrow desconocido
+  - una creación repetida por otra transacción
+- [x] **Unitarios de `toView`:**
+  - límites `now = cancelDeadline − 1`, `= cancelDeadline`, `= expiresAt − 1` y `= expiresAt`, para cada flag y para `ExpiredRecoverable`
+  - los estados finales no admiten acciones, antes y después de `expiresAt`
+  - serialización con `uint256` máximo y checksum
+- [x] **Oráculo: la cadena.** Los eventos guardados tienen que ser exactamente los logs del contrato. Cada fila de `escrows` tiene que coincidir con `getEscrow`, más las transacciones y los timestamps de sus logs.
+- [x] **Integración con Anvil y Postgres reales:**
+  - **Indexar, matar y reanudar.** Un proceso indexador real (`MODE=indexer`, `BATCH_SIZE=1`) recorre unos 270 bloques. Se lo mata con SIGKILL a un tercio y a dos tercios, se crean escrows mientras está caído y se lo reanuda hasta el final. Con SIGTERM sale con código 0, y la DB coincide con la cadena.
+  - **Falla a mitad de batch.** Un trigger hace fallar la primera escritura en `escrows`, después de que el batch guardó sus eventos. No queda nada, y el reintento aplica cada evento una vez.
+  - **Reproceso.** Al reprocesar todo lo indexado, forzando el checkpoint hacia atrás, la DB queda idéntica fila por fila.
+  - **Mismo bloque.** Tres escrows creados y resueltos en el mismo bloque, con Anvil en `--order fifo` y con nonce y gas fijados a mano.
+  - **Confirmaciones.** Con `CONFIRMATIONS = 2`, el checkpoint queda 2 bloques detrás del head, y el escrow aparece recién cuando tiene 2 bloques encima.
+  - **Guard de cadena.** El Anvil reiniciado tiene el mismo chain id, las mismas direcciones y el mismo `startBlock`; solo cambia el hash.
+    - el archivo de deploy viejo se rechaza
+    - sin `RESET_ON_CHAIN_MISMATCH`, aborta sin tocar la DB
+    - con el flag, la vacía e indexa la cadena nueva
+    - el reinicio usa `--timestamp`, porque dos Anvil iniciados en el mismo segundo serían la misma cadena
+- [x] **Aislamiento.** Cada archivo crea su propio schema en `escrow_test` y lo usa por `search_path`, así los archivos corren en paralelo. En las suites del indexador, cada test vacía las tablas y deploya su propio contrato.
+- [x] **Tests HTTP** con `fastify.inject`, sin abrir puertos:
+  - un escrow en cada estado efectivo, y la vista completa comparada con la cadena
+  - los 6 filtros de estado, direcciones en cualquier combinación de mayúsculas y minúsculas, filtros combinados, paginación con `total` y parámetros vacíos
+  - `400` para 6 ids y 9 queries inválidas, y `404` para 3 ids
+  - `/health`: ok, degradado con el lag justo por encima del umbral, con lag negativo y antes de que arranque el indexador
+  - `503` sin nodo y sin DB, apuntando a un puerto cerrado
+  - `ExpiredRecoverable` después de `evm_increaseTime`, sin transacción de recover: el contrato sigue diciendo `Pending` y no hay eventos nuevos
+  - los cuatro límites al segundo, con `evm_setNextBlockTimestamp`, en la vista y en el filtro SQL
+- `indexNextBatch` se exporta para que los tests indexen batch por batch, sin el loop ni sus esperas.
 
-**Commits:** `test(api): …` por grupo.
+**Verificación:**
+- **Mutaciones.** Se introdujeron a mano 19 bugs en `src/`, uno por vez, y los tests detectaron todos. Entre otros: límites de tiempo en `toView` y en el SQL, batch sin transacción, confirmaciones corridas en uno, guard que ignora el hash, eventos de un bloque en orden inverso, umbral de `/health`, `500` en lugar de `503`, orden y `total` del listado, un reloj que cachea para siempre, una reanudación que saltea un bloque y el lag recortado a 0 de la fase 7.
+  - El primer intento de romper la atomicidad fue cambiar `ROLLBACK` por `COMMIT`, y ningún test lo detectó. No podía detectarlo: en Postgres, un `COMMIT` sobre una transacción abortada hace rollback. Se reemplazó por una mutación que sí la rompe: el batch sin `BEGIN`.
+  - El lag recortado a 0 no lo detectaba ningún test. Se agregó el de lag negativo.
+  - Con la reanudación rota, el test de kill esperaba para siempre a su proceso hijo y colgaba la corrida. Ahora tiene un tope de espera y, si falla, mata a sus hijos.
+- **Cache de viem.** El test de lag negativo leía un head viejo, porque el cliente de viem cachea `getBlockNumber` durante el `pollingInterval`. El cliente de los tests va sin cache.
+- **Estabilidad:**
+  - 5 corridas seguidas en verde
+  - otra limitada a un solo núcleo de CPU, en 12 s
+  - otra desde un volumen de Postgres nuevo, en 9 s, incluida la inicialización
+
+**Hecho cuando:** `docker compose run --rm npm test`, `npm run lint` y `npm run typecheck` están en verde. ✅ También `npm run build`.
+
+**Commits:** `build: postgres service for the api tests`, `test(api): projector and derived status units`, `test(api): indexer and chain guard against anvil and postgres`, `test(api): http endpoints and time-derived status`.
 
 ## Fase 9: Stack compose
 
@@ -495,8 +542,7 @@ Se corren con `docker compose run --rm npm test`. El servicio `npm` depende de `
   - `forge script script/Deploy.s.sol --rpc-url http://anvil:8545 --broadcast`, con la clave de la cuenta 0 de Anvil (pública y conocida, solo local)
   - escribe en el volumen nombrado `deployments`
 - [ ] **Servicio `postgres`:**
-  - healthcheck con `pg_isready`
-  - `docker/postgres/init.sql`, que crea `escrow_test`
+  - [x] healthcheck con `pg_isready` y `docker/postgres/init.sql`, que crea `escrow_test`: adelantados a la fase 8
   - puerto sin exponer por defecto, opcional por `.env`
 - [ ] **Servicio `api`:**
   - imagen `api:runtime`
