@@ -399,7 +399,7 @@ test/invariant/EscrowInvariants.t.sol  5 invariantes sobre el handler
 - [x] **`GET /escrows/:id`:**
   - `400` si el id no es un entero decimal dentro del rango de `uint256` (`abc`, `-1`, `0x1`, `1e3`)
   - `404` si no existe
-  - `503` si el nodo no responde, porque sin reloj no hay estado derivado
+  - `503` si el nodo no responde, porque sin reloj no hay estado derivado, o si no responde la DB
 - [x] **`GET /escrows`:**
   - filtros `sender`, `beneficiary` y `status` (el efectivo, con `ExpiredRecoverable` calculado en SQL con `now`)
   - `limit` (por defecto 20, de 1 a 100) y `offset`, más `total`. Fuera de rango es un `400`, no se recorta.
@@ -419,7 +419,8 @@ test/invariant/EscrowInvariants.t.sol  5 invariantes sobre el handler
   - Si un componente falla de forma irrecuperable, se detiene el otro y el proceso sale con código 1.
   - Con SIGTERM, la API deja de aceptar requests y espera a las que están en curso.
   - Variables nuevas: `MODE`, `HOST`, `PORT` y `HEALTH_MAX_LAG`.
-- [x] **Logs:** una línea por request en `info`, y las de `/health` en `debug`.
+- [x] **Postgres colgado:** timeout de 3 s, del lado del cliente, para obtener una conexión y para cada query. Sin él, con Postgres pausado, una request quedaba colgada y SIGTERM no terminaba el proceso hasta que volvía la DB. Se encontró al revisar las decisiones de la fase.
+- [x] **Logs:** una línea por request en `info`. Las de `/health` que responden `200` van en `debug`, y un `degraded` queda en `info`.
 - Los tests automatizados son de la fase 8. `buildServer` arma la app sin escuchar, así los tests pueden usar `fastify.inject`.
 
 **Verificación:** contra Anvil y Postgres, con el mismo tipo de override descartable que en la fase 6, y la API en el puerto 3107 porque el 3000 estaba ocupado en el host.
@@ -441,8 +442,9 @@ test/invariant/EscrowInvariants.t.sol  5 invariantes sobre el handler
 - **Reloj:** 50 requests simultáneas hacen una sola consulta `eth_getBlockByNumber` al nodo.
 - **Health:**
   - con el RPC congelado, `/health` responde `degraded` en 2 s, y `/escrows/1` responde `503` cuando vence el timeout de viem, a los 10 s
-  - con Postgres detenido, `/health` informa `db: error` y los escrows dan `500` genérico. Al volver, todo se recupera sin reiniciar.
-  - con el indexador detenido y 12 bloques nuevos, un proceso `MODE=api` pasa a `degraded` con `lag: 12`
+  - con Postgres detenido, `/health` informa `db: error` y los escrows dan `503` al instante. Al volver, todo se recupera sin reiniciar.
+  - con Postgres pausado, los escrows dan `503` a los 3 s, o a los 6 s en el listado si la transacción ya estaba abierta. 50 requests simultáneas reciben `503` en menos de 3,1 s, y el indexador reintenta sin caerse.
+  - con el indexador detenido y 12 bloques nuevos, un proceso `MODE=api` pasa a `degraded` con `lag: 12`. Ese `503` queda en el log en `info`, y los `200` no aparecen.
   - el umbral `CONFIRMATIONS + HEALTH_MAX_LAG` se respeta en el borde
   - sin fila en `indexer_state`, informa `lastIndexedBlock: null`
   - después de reiniciar Anvil, el proceso `MODE=api` informa `lag: -36` y `degraded`
@@ -453,7 +455,7 @@ test/invariant/EscrowInvariants.t.sol  5 invariantes sobre el handler
 - **Fallas:**
   - si la API no puede escuchar (`EADDRNOTAVAIL`), el indexador se detiene y el proceso sale con código 1
   - al reiniciar Anvil, el guard detiene el indexador, la API cierra el puerto y el proceso sale con código 1
-- **Apagado:** un SIGTERM sale en 0,23 s con código 0. Con una request esperando a un RPC congelado, esa request recibe `503` en 0,57 s y el proceso sale en 0,26 s.
+- **Apagado:** un SIGTERM sale en 0,23 s con código 0. Con una request esperando a un RPC congelado, esa request recibe `503` en 0,57 s y el proceso sale en 0,26 s. Con un listado esperando a Postgres pausado, el listado recibe `503` a los 6 s y el proceso sale en 5,6 s con código 0.
 - La imagen `runtime` arranca con los defaults, indexa y sirve la API.
 - Los cuatro ejemplos curl del README, cambiando solo el puerto, devuelven lo documentado. Las direcciones abreviadas (`0xf39f...2266`) no se podían copiar y pegar: se reemplazaron por las completas.
 

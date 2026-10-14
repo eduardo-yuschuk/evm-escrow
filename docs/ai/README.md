@@ -222,3 +222,27 @@ El autor descartó `via_ir` y `unchecked`, y quedó registrado en `docs/gas.md` 
 - **`total` consistente.** El conteo y la página salen de una misma transacción `REPEATABLE READ`, así coinciden aunque el indexador escriba entre las dos consultas.
 - **Ejemplos curl del README.** Tenían direcciones abreviadas (`0xf39f...2266`) que la API rechaza con `400`. Se reemplazaron por las completas y se verificaron contra el stack.
 - **Commits.** El ROADMAP preveía separar los endpoints de escrows y el de health, pero los dos se registran en `buildServer`. Se reagruparon y se comprobó, en una copia descartable, que cada commit compila solo.
+
+## 20. Revisión de las decisiones de la fase 7
+
+> iteremos las "Decisiones que conviene revisar"
+
+**Output:** la IA repasó las cuatro decisiones que había marcado al cerrar la fase 7 y las presentó en un cuestionario, cada una con sus alternativas. El autor eligió:
+- **Validación del listado:** se mantiene el `400` estricto para un `limit` fuera de rango o un parámetro desconocido. Se descartaron recortar el `limit` e ignorar los parámetros desconocidos.
+- **Parámetros vacíos:** siguen contando como ausentes.
+- **Umbral de `/health`:** se mantiene `CONFIRMATIONS + HEALTH_MAX_LAG`. Se descartaron un umbral absoluto y un lag solo informativo.
+- **Errores y logs:** se aplican los dos ajustes propuestos.
+  - Con la DB caída, los endpoints de escrows responden `503` "Cannot read the database", igual que con el nodo, en lugar de un `500` genérico. El `500` queda para errores inesperados.
+  - Las requests a `/health` van en `debug` solo si responden `200`. Antes, un `degraded` causado solo por el lag no dejaba ninguna línea en `info`, así que un indexador trabado pasaba desapercibido.
+
+Al repasar el manejo de errores apareció un bug que no se había probado en la fase 7: se había probado Postgres detenido, pero no pausado.
+- **Con Postgres pausado**, `/escrows/1` no respondió en 40 s, y SIGTERM no terminó el proceso hasta que volvió la DB, más de 3 minutos después. El pool de `pg` no tenía ningún timeout.
+- **La corrección** es un timeout de 3 s, del lado del cliente, para obtener una conexión y para cada query. `statement_timeout` no sirve, porque lo aplica el servidor, que en este caso no responde. Con 3 s, aunque venzan una query y su `ROLLBACK`, el apagado entra en los 10 s que espera `docker compose stop`.
+
+**Verificación** con el override descartable de la fase 7:
+- **Postgres pausado:** los escrows dan `503` a los 3 s, o a los 6 s en el listado si la transacción ya estaba abierta. 50 requests simultáneas reciben `503` en menos de 3,1 s. El indexador reintenta sin caerse, y todo se recupera al reanudar Postgres.
+- **Apagado:** un SIGTERM con un listado colgado sale en 5,6 s con código 0.
+- **Postgres detenido:** los escrows dan `503` al instante.
+- **Logs:** el log de cada `503` incluye la causa (`Cannot read the database: Query read timeout`). Un `/health` degradado solo por lag queda en `info`, y los `200` no aparecen.
+
+`typecheck`, `lint` y `build` pasan. Se actualizaron [DESIGN](DESIGN.md#endpoints) (códigos, logs y *Postgres colgado* en *Proceso y configuración*) y la fase 7 del [ROADMAP](ROADMAP.md).

@@ -301,12 +301,12 @@ El código está en [`api/src/http/`](../../api/src/http/), con fastify.
 | --- | --- |
 | `400` | id, filtro o paginación inválidos, o un parámetro desconocido en el listado |
 | `404` | Escrow inexistente o ruta desconocida |
-| `500` | Error inesperado, por ejemplo con la DB caída |
-| `503` | El nodo no responde, así que no hay reloj de cadena. En `/health`, servicio degradado |
+| `500` | Error inesperado |
+| `503` | El nodo no responde, así que no hay reloj de cadena, o la DB no responde. En `/health`, servicio degradado |
 
 - **Errores** con el mismo formato que los de fastify: `{ "statusCode": 400, "error": "Bad Request", "message": "limit: Too big: expected number to be <=100" }`. El mensaje de un `400` enumera todos los problemas.
 - Un `500` no expone el mensaje original, que puede revelar detalles internos: el detalle queda en el log.
-- **Logs:** una línea por request, al terminar, en `info`. Las de `/health` van en `debug`, porque el healthcheck de compose las repite cada pocos segundos.
+- **Logs:** una línea por request, al terminar, en `info`. Las de `/health` que responden `200` van en `debug`, porque el healthcheck de compose las repite cada pocos segundos. Un `degraded` sí queda en `info`, incluso cuando el único problema es el lag, así que un indexador trabado se ve en el log.
 
 #### `GET /escrows/:id`
 
@@ -373,7 +373,11 @@ El código está en [`api/src/http/`](../../api/src/http/), con fastify.
 - **Arranque.** Siempre corre las migraciones. Si hay indexador, también el guard de cadena. Recién después la API empieza a escuchar, así que el puerto cerrado también indica que el servicio no está listo.
 - **`MODE=api`** no necesita `DEPLOYMENTS_FILE` ni corre el guard: solo lee. Tiene que usar el mismo `CONFIRMATIONS` que el indexador para interpretar el lag.
 - **Fallas.** Si un componente falla de forma irrecuperable, se detiene el otro y el proceso sale con código 1. Una API sin indexador seguiría sirviendo datos cada vez más viejos.
-- **Apagado.** Con SIGTERM, la API deja de aceptar requests, responde `503` a las nuevas y espera a las que están en curso. Las que esperan al nodo terminan enseguida, porque se cancelan las requests al RPC.
+- **Postgres colgado.** Obtener una conexión y cada query tienen un timeout de 3 s del lado del cliente. Sin él, con Postgres pausado, una request quedaba colgada para siempre y SIGTERM no terminaba el proceso hasta que volvía la DB.
+  - Los endpoints de escrows responden `503` a los 3 s. El listado puede tardar 6 s, porque si la transacción ya estaba abierta también vence el `ROLLBACK`.
+  - El indexador reintenta con backoff, como con cualquier falla de DB.
+  - El peor caso entra en los 10 s que espera `docker compose stop` antes del SIGKILL.
+- **Apagado.** Con SIGTERM, la API deja de aceptar requests, responde `503` a las nuevas y espera a las que están en curso. Las que esperan al nodo terminan enseguida, porque se cancelan las requests al RPC. Las que esperan a la DB terminan, como mucho, cuando vence su timeout.
 
 | Variable | Default | Uso |
 | --- | --- | --- |
