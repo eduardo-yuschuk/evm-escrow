@@ -1,6 +1,6 @@
 # Diseño y decisiones
 
-Diseño del contrato y del indexador, decisiones sobre las ambigüedades del enunciado y limitaciones conocidas. Cómo correr el proyecto y sus pruebas está en el [README](../../README.md), la ruta de desarrollo en el [ROADMAP](ROADMAP.md) y el enunciado en [`CHALLENGE.md`](../../CHALLENGE.md).
+Diseño del contrato, del indexador y de la API, decisiones sobre las ambigüedades del enunciado y limitaciones conocidas. Cómo correr el proyecto y sus pruebas está en el [README](../../README.md), la ruta de desarrollo en el [ROADMAP](ROADMAP.md) y el enunciado en [`CHALLENGE.md`](../../CHALLENGE.md).
 
 ## Índice
 
@@ -264,21 +264,6 @@ El código está en [`api/src/indexer/`](../../api/src/indexer/) y el esquema en
 - **Apagado.** Con SIGTERM (`docker compose stop`) o SIGINT, se cancelan las requests al RPC en curso y se deja terminar la transacción de DB en curso. Un rango a medio leer se descarta y se vuelve a leer al arrancar. Una segunda señal sale de inmediato.
 - **Logs** en JSON, uno por línea, con pino.
 
-#### Configuración
-
-| Variable | Default | Uso |
-| --- | --- | --- |
-| `RPC_URL` | obligatoria | Nodo JSON-RPC |
-| `DATABASE_URL` | obligatoria | Postgres |
-| `DEPLOYMENTS_FILE` | obligatoria | `deployments/<chainId>.json` escrito por el [deploy](#deploy) |
-| `CONFIRMATIONS` | `0` | Bloques encima de un bloque para indexarlo |
-| `BATCH_SIZE` | `1000` | Bloques máximos por `eth_getLogs` y por transacción de DB |
-| `POLL_INTERVAL_MS` | `1000` | Espera entre consultas cuando no quedan bloques por indexar |
-| `RESET_ON_CHAIN_MISMATCH` | `false` | Vaciar y reindexar una DB de otra cadena o contrato, en lugar de abortar |
-| `LOG_LEVEL` | `info` | Nivel de pino |
-
-Se validan con zod al arrancar. Una variable vacía toma el default.
-
 #### Esquema
 
 - **Migraciones** SQL versionadas en `api/migrations/`, aplicadas al arrancar por un runner propio.
@@ -296,6 +281,9 @@ Se validan con zod al arrancar. Una variable vacía toma el default.
 ### Estado derivado del tiempo
 
 - **Reloj de referencia.** "Ahora" es el **timestamp del último bloque de la cadena**, no el reloj del servidor. Si no, el demo que avanza el tiempo de Anvil mostraría estados incorrectos, y en producción esta elección es coherente con lo que va a aceptar o rechazar el contrato.
+  - El reloj (`api/src/clock.ts`) reutiliza el timestamp durante 1 s, y las requests simultáneas comparten una sola consulta al nodo.
+  - Si el nodo no responde, los endpoints de escrows devuelven `503`: sin reloj no hay estado derivado.
+  - La proyección llega hasta el último bloque indexado y el reloj sigue al head. Con `CONFIRMATIONS` > 0, una resolución en un bloque sin confirmar todavía no se ve, pero el tiempo sí avanza.
 - **`onchainStatus`.** Es lo que dicen los eventos indexados.
 - **`status` (efectivo).** Es igual a `onchainStatus`, salvo un caso: `Pending` con `now >= expiresAt` pasa a **`ExpiredRecoverable`**.
 - **`Expired`** queda reservado para el estado final on-chain, después de `recoverExpired`.
@@ -303,8 +291,22 @@ Se validan con zod al arrancar. Una variable vacía toma el default.
   - `canCancel`: `Pending && now < cancelDeadline`
   - `canConfirm` y `canReject`: `Pending && now < expiresAt`
   - `canRecover`: `Pending && now >= expiresAt`
+- Lo calcula `toView(escrow, now)`, una función pura en `api/src/http/view.ts`. El filtro por estado del listado aplica la misma regla en SQL.
 
 ### Endpoints
+
+El código está en [`api/src/http/`](../../api/src/http/), con fastify.
+
+| Código | Cuándo |
+| --- | --- |
+| `400` | id, filtro o paginación inválidos, o un parámetro desconocido en el listado |
+| `404` | Escrow inexistente o ruta desconocida |
+| `500` | Error inesperado, por ejemplo con la DB caída |
+| `503` | El nodo no responde, así que no hay reloj de cadena. En `/health`, servicio degradado |
+
+- **Errores** con el mismo formato que los de fastify: `{ "statusCode": 400, "error": "Bad Request", "message": "limit: Too big: expected number to be <=100" }`. El mensaje de un `400` enumera todos los problemas.
+- Un `500` no expone el mensaje original, que puede revelar detalles internos: el detalle queda en el log.
+- **Logs:** una línea por request, al terminar, en `info`. Las de `/health` van en `debug`, porque el healthcheck de compose las repite cada pocos segundos.
 
 #### `GET /escrows/:id`
 
@@ -313,7 +315,7 @@ Se validan con zod al arrancar. Una variable vacía toma el default.
   "id": "1",
   "sender": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
   "beneficiary": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
-  "token": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+  "token": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
   "amount": "1000000000000000000",
   "createdAt": 1760000000,
   "cancelDeadline": 1760007200,
@@ -333,14 +335,21 @@ Se validan con zod al arrancar. Una variable vacía toma el default.
 
 - `id` y `amount` van como **string**, porque un `uint256` excede `Number.MAX_SAFE_INTEGER`.
 - Las direcciones se devuelven con checksum EIP-55.
-- Si el id no existe, devuelve `404`.
+- Los timestamps son segundos unix, como número. `now` es el timestamp con el que se calcularon el estado y los flags.
+- `createdTx` y `resolvedTx` son los hashes de las dos transacciones que puede tener un escrow.
+- **El id** tiene que ser un entero decimal dentro del rango de `uint256`. Si no, como en `abc`, `-1`, `0x1` o `1e3`, devuelve `400`.
+- Si el escrow no existe, incluido el id `0`, devuelve `404`.
 
 #### `GET /escrows?sender=&beneficiary=&status=&limit=&offset=`
 
-- **Filtros.** Todos son opcionales. Las direcciones no distinguen mayúsculas. `status` filtra por **estado efectivo**, incluido `ExpiredRecoverable`, que se calcula en SQL comparando `expires_at` con el timestamp de la cadena.
-- **Paginación.** `limit` vale 20 por defecto, con máximo 100. `offset` vale 0 por defecto. Se ordena por `id` descendente.
-- **Respuesta:** `{ "items": [...], "limit": 20, "offset": 0, "total": 42 }`.
-- Un `status` o una dirección inválidos devuelven `400`.
+- **Filtros.** Todos son opcionales y se combinan con AND.
+  - Las direcciones no distinguen mayúsculas.
+  - `status` filtra por **estado efectivo**: `Pending`, `ExpiredRecoverable`, `Released`, `Rejected`, `CancelledBySender` o `Expired`. `Pending` y `ExpiredRecoverable` se separan en SQL comparando `expires_at` con el timestamp de la cadena.
+  - Un parámetro vacío cuenta como ausente. Así, `/escrows?sender=&beneficiary=&status=`, la forma del enunciado, lista todo.
+- **Paginación.** `limit` va de 1 a 100 y vale 20 por defecto. `offset` vale 0 por defecto. Un valor fuera de rango devuelve `400` en lugar de recortarse. Se ordena por `id` descendente.
+- **Respuesta:** `{ "items": [...], "limit": 20, "offset": 0, "total": 42 }`. Cada item tiene el mismo formato que `/escrows/:id`.
+  - `total` y la página salen del mismo snapshot, una transacción `REPEATABLE READ` de solo lectura, así que coinciden aunque el indexador escriba en el medio.
+- **`400`** con un `status` o una dirección inválidos, y también con un parámetro desconocido: así, un error de tipeo como `benficiary` no descarta el filtro sin avisar.
 
 #### `GET /health`
 
@@ -348,7 +357,40 @@ Se validan con zod al arrancar. Una variable vacía toma el default.
 { "status": "ok", "db": "ok", "rpc": "ok", "lastIndexedBlock": 1234, "chainHead": 1234, "lag": 0 }
 ```
 
-`status` pasa a `degraded` si la DB o el RPC no responden, o si el lag supera un umbral configurable. En ese caso el código HTTP es `503`.
+- `lastIndexedBlock` es el checkpoint del indexador, `chainHead` el último bloque del nodo y `lag` la diferencia entre los dos.
+- `status` pasa a `degraded`, con código `503`, en cualquiera de estos casos:
+  - la DB o el RPC no responden en 2 s: el campo queda en `error` y los números que dependen de él en `null`
+  - el indexador todavía no arrancó: `lastIndexedBlock` es `null`
+  - `lag` supera `CONFIRMATIONS + HEALTH_MAX_LAG`
+  - `lag` es negativo
+- **Umbral.** Con `CONFIRMATIONS=N`, el lag normal es N. Por eso `HEALTH_MAX_LAG` se suma a las confirmaciones.
+- **Lag negativo.** El checkpoint se lee antes que el head, así que el head solo puede quedar por debajo si la cadena retrocedió: el nodo se reinició o se reemplazó, o va atrasado respecto del que lee el indexador. Con `MODE=all`, el indexador ya habría salido por el guard de cadena. Este chequeo lo detecta en un proceso con `MODE=api`.
+- Lo usa el healthcheck de compose.
+
+### Proceso y configuración
+
+- **Un proceso, dos componentes.** Con `MODE=all`, el default, corren juntos el indexador y la API. Con `MODE=indexer` o `MODE=api` corre uno solo, por ejemplo para escalar la API por separado.
+- **Arranque.** Siempre corre las migraciones. Si hay indexador, también el guard de cadena. Recién después la API empieza a escuchar, así que el puerto cerrado también indica que el servicio no está listo.
+- **`MODE=api`** no necesita `DEPLOYMENTS_FILE` ni corre el guard: solo lee. Tiene que usar el mismo `CONFIRMATIONS` que el indexador para interpretar el lag.
+- **Fallas.** Si un componente falla de forma irrecuperable, se detiene el otro y el proceso sale con código 1. Una API sin indexador seguiría sirviendo datos cada vez más viejos.
+- **Apagado.** Con SIGTERM, la API deja de aceptar requests, responde `503` a las nuevas y espera a las que están en curso. Las que esperan al nodo terminan enseguida, porque se cancelan las requests al RPC.
+
+| Variable | Default | Uso |
+| --- | --- | --- |
+| `MODE` | `all` | `all`, `indexer` o `api` |
+| `RPC_URL` | obligatoria | Nodo JSON-RPC |
+| `DATABASE_URL` | obligatoria | Postgres |
+| `DEPLOYMENTS_FILE` | obligatoria, salvo con `MODE=api` | `deployments/<chainId>.json` escrito por el [deploy](#deploy) |
+| `CONFIRMATIONS` | `0` | Bloques encima de un bloque para indexarlo |
+| `BATCH_SIZE` | `1000` | Bloques máximos por `eth_getLogs` y por transacción de DB |
+| `POLL_INTERVAL_MS` | `1000` | Espera entre consultas cuando no quedan bloques por indexar |
+| `RESET_ON_CHAIN_MISMATCH` | `false` | Vaciar y reindexar una DB de otra cadena o contrato, en lugar de abortar |
+| `HOST` | `0.0.0.0` | Interfaz donde escucha la API |
+| `PORT` | `3000` | Puerto de la API |
+| `HEALTH_MAX_LAG` | `10` | Bloques de atraso tolerados además de `CONFIRMATIONS` antes de que `/health` informe `degraded` |
+| `LOG_LEVEL` | `info` | Nivel de pino |
+
+Se validan con zod al arrancar. Una variable vacía toma el default y un valor inválido aborta con la lista de errores.
 
 ## Decisiones sobre ambigüedades del enunciado
 

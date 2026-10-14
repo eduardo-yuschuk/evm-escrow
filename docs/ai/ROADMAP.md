@@ -389,23 +389,77 @@ test/invariant/EscrowInvariants.t.sol  5 invariantes sobre el handler
 
 **Commits:** `feat(api): db schema and migrations`, `feat(api): event projector`, `feat(api): indexer loop with checkpoint`, `feat(api): chain mismatch guard`.
 
-## Fase 7: API HTTP
+## Fase 7: API HTTP ✅
 
-- [ ] **Reloj de cadena:** `chainNow()` es el timestamp del último bloque, con cache corto (~1 s).
-- [ ] **Estado derivado** en `toView(escrow, now)`, una función pura:
-  - `status` efectivo, que incluye `ExpiredRecoverable`
-  - flags `canCancel`, `canConfirm`, `canReject` y `canRecover`
-- [ ] **`GET /escrows/:id`:** 404 si no existe y 400 si el id no es un entero válido.
-- [ ] **`GET /escrows`:**
-  - filtros `sender`, `beneficiary` y `status` (el efectivo, `ExpiredRecoverable` calculado en SQL con `now`)
-  - `limit` (por defecto 20, máximo 100) y `offset`, más `total`
-- [ ] **`GET /health`:** DB, RPC, `lastIndexedBlock`, `chainHead` y `lag`. Devuelve 503 si está degradado. También lo usa el healthcheck de compose.
-- [ ] **Serialización:** `uint256` como string y direcciones con checksum en la respuesta.
-- [ ] **Proceso:** indexador y API en el mismo proceso, con un flag para correr solo uno de los dos.
+- [x] **Reloj de cadena** (`src/clock.ts`): `now()` es el timestamp del último bloque, cacheado 1 s. Las requests simultáneas comparten una sola consulta al nodo, y una falla no se cachea.
+- [x] **Estado derivado** en `toView(escrow, now)`, una función pura (`src/http/view.ts`):
+  - `status` efectivo, que incluye `ExpiredRecoverable`, más `onchainStatus`
+  - flags `canCancel`, `canConfirm`, `canReject` y `canRecover`, con las mismas ventanas que el contrato
+  - `now` en la respuesta: el timestamp con el que se calculó todo
+- [x] **`GET /escrows/:id`:**
+  - `400` si el id no es un entero decimal dentro del rango de `uint256` (`abc`, `-1`, `0x1`, `1e3`)
+  - `404` si no existe
+  - `503` si el nodo no responde, porque sin reloj no hay estado derivado
+- [x] **`GET /escrows`:**
+  - filtros `sender`, `beneficiary` y `status` (el efectivo, con `ExpiredRecoverable` calculado en SQL con `now`)
+  - `limit` (por defecto 20, de 1 a 100) y `offset`, más `total`. Fuera de rango es un `400`, no se recorta.
+  - un parámetro vacío cuenta como ausente, así que la forma del enunciado, `?sender=&beneficiary=&status=`, lista todo
+  - un parámetro desconocido es un `400`, para que un error de tipeo no descarte un filtro sin avisar
+  - `total` y la página salen de una misma transacción `REPEATABLE READ` de solo lectura
+- [x] **`GET /health`:** DB, RPC, `lastIndexedBlock`, `chainHead` y `lag`. Devuelve `503` con `degraded` si:
+  - un chequeo no responde en 2 s
+  - el indexador todavía no arrancó
+  - el lag supera `CONFIRMATIONS + HEALTH_MAX_LAG` (10 por defecto)
+  - el lag es negativo: el checkpoint se lee antes que el head, así que eso solo pasa si la cadena retrocedió
+  - la primera versión leía los dos en paralelo y recortaba el lag a 0. Así, un proceso `MODE=api` informaba `ok` después de reiniciar Anvil. Se corrigió durante la verificación.
+  - el healthcheck de compose se agrega en la fase 9
+- [x] **Serialización:** `uint256` como string, direcciones con checksum y timestamps como número. Los errores mantienen el formato de fastify (`statusCode`, `error`, `message`), y un `500` no expone el mensaje original.
+- [x] **Proceso:** indexador y API en el mismo proceso, con `MODE=all` (default), `indexer` o `api`.
+  - Con `MODE=api` no hace falta `DEPLOYMENTS_FILE` ni corre el guard de cadena.
+  - Si un componente falla de forma irrecuperable, se detiene el otro y el proceso sale con código 1.
+  - Con SIGTERM, la API deja de aceptar requests y espera a las que están en curso.
+  - Variables nuevas: `MODE`, `HOST`, `PORT` y `HEALTH_MAX_LAG`.
+- [x] **Logs:** una línea por request en `info`, y las de `/health` en `debug`.
+- Los tests automatizados son de la fase 8. `buildServer` arma la app sin escuchar, así los tests pueden usar `fastify.inject`.
 
-**Hecho cuando:** los ejemplos curl del README devuelven lo documentado contra el stack de compose.
+**Verificación:** contra Anvil y Postgres, con el mismo tipo de override descartable que en la fase 6, y la API en el puerto 3107 porque el 3000 estaba ocupado en el host.
+- **Cuatro caminos:** confirmar, rechazar, cancelar y vencer con `recoverExpired`, más un escrow vencido sin recuperar y uno en sentido inverso. `/escrows/:id` devuelve estado, flags, hashes y timestamps correctos.
+- **Límites de tiempo** con `evm_setNextBlockTimestamp`:
+  - en `cancelDeadline − 1`, `canCancel` es `true`
+  - en `cancelDeadline`, pasa a `false`
+  - en `expiresAt − 1`, el escrow sigue `Pending`
+  - en `expiresAt`, pasa a `ExpiredRecoverable` con `canRecover`, sin ninguna transacción de recover
+- **Listado:**
+  - cada uno de los 6 estados efectivos devuelve exactamente su escrow
+  - `sender` en minúsculas, mayúsculas y checksum da el mismo resultado
+  - los filtros combinados funcionan
+  - la paginación es correcta, incluido un `offset` más allá del final
+  - el `?sender=&beneficiary=&status=` del enunciado lista todo
+- **Errores:**
+  - 20 entradas inválidas dan `400` con un mensaje claro: id no decimal o fuera de rango, `status` o dirección inválidos, `limit` 0 o 101, `offset` enorme, parámetro desconocido o repetido
+  - el id `0` y el máximo `uint256` dan `404`
+- **Reloj:** 50 requests simultáneas hacen una sola consulta `eth_getBlockByNumber` al nodo.
+- **Health:**
+  - con el RPC congelado, `/health` responde `degraded` en 2 s, y `/escrows/1` responde `503` cuando vence el timeout de viem, a los 10 s
+  - con Postgres detenido, `/health` informa `db: error` y los escrows dan `500` genérico. Al volver, todo se recupera sin reiniciar.
+  - con el indexador detenido y 12 bloques nuevos, un proceso `MODE=api` pasa a `degraded` con `lag: 12`
+  - el umbral `CONFIRMATIONS + HEALTH_MAX_LAG` se respeta en el borde
+  - sin fila en `indexer_state`, informa `lastIndexedBlock: null`
+  - después de reiniciar Anvil, el proceso `MODE=api` informa `lag: -36` y `degraded`
+- **Modos:**
+  - `MODE=indexer` no abre el puerto y sigue indexando
+  - `MODE=api` arranca sin `DEPLOYMENTS_FILE` y lee la DB del otro proceso
+  - una configuración inválida lista todos los errores juntos
+- **Fallas:**
+  - si la API no puede escuchar (`EADDRNOTAVAIL`), el indexador se detiene y el proceso sale con código 1
+  - al reiniciar Anvil, el guard detiene el indexador, la API cierra el puerto y el proceso sale con código 1
+- **Apagado:** un SIGTERM sale en 0,23 s con código 0. Con una request esperando a un RPC congelado, esa request recibe `503` en 0,57 s y el proceso sale en 0,26 s.
+- La imagen `runtime` arranca con los defaults, indexa y sirve la API.
+- Los cuatro ejemplos curl del README, cambiando solo el puerto, devuelven lo documentado. Las direcciones abreviadas (`0xf39f...2266`) no se podían copiar y pegar: se reemplazaron por las completas.
 
-**Commits:** `feat(api): chain clock and derived status`, `feat(api): escrow endpoints`, `feat(api): health endpoint`.
+**Hecho cuando:** los ejemplos curl del README devuelven lo documentado contra el stack de compose. ✅ Se verificó con el override descartable, porque el stack de compose es de la fase 9. `npm run lint`, `typecheck` y `build` pasan.
+
+**Commits:** `feat(api): chain clock and derived status`, `feat(api): escrow and health endpoints`, `feat(api): run the indexer and the api in one process`. El plan original separaba los endpoints de escrows y el de health, pero comparten `buildServer` y cada commit tiene que compilar solo.
 
 ## Fase 8: Tests de la API
 

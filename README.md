@@ -6,7 +6,7 @@ Escrow de tokens ERC-20 en Solidity, más una API/indexador en TypeScript que pr
 - **API e indexador** (`api/`): Node.js, TypeScript y viem. Indexa los eventos en Postgres y expone el estado de cada escrow por HTTP.
 - **Todo corre con Docker Compose:** nodo local (Anvil), deploy, base de datos, API, tests, análisis estático y demo.
 
-> **Estado:** el contrato y el indexador están terminados. La API HTTP, el stack completo (`docker compose up`), la demo y CI están en desarrollo; los comandos de esas secciones son los previstos.
+> **Estado:** el contrato, el indexador y la API HTTP están terminados. El stack completo (`docker compose up`), la demo y CI están en desarrollo; los comandos de esas secciones son los previstos.
 
 ## Documentación
 
@@ -104,11 +104,13 @@ Si el stack no está corriendo, lo levanta y espera a que `api` esté sano. Crea
 Con el stack levantado:
 
 ```bash
-curl http://localhost:3000/health
-curl http://localhost:3000/escrows/1
-curl "http://localhost:3000/escrows?sender=0xf39f...2266&status=Pending&limit=20&offset=0"
-curl "http://localhost:3000/escrows?beneficiary=0x7099...79c8&status=ExpiredRecoverable"
+curl http://localhost:3000/health          # DB, RPC, último bloque indexado y lag
+curl http://localhost:3000/escrows/1       # un escrow, con su estado efectivo y qué acciones admite
+curl "http://localhost:3000/escrows?sender=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266&status=Pending&limit=20&offset=0"
+curl "http://localhost:3000/escrows?beneficiary=0x70997970C51812dc3A010C7d01b50e0d17dc79C8&status=ExpiredRecoverable"
 ```
+
+Las direcciones son las cuentas 0 y 1 de Anvil, las que usa la demo. El formato de cada respuesta y los códigos de error están en [DESIGN](docs/ai/DESIGN.md#endpoints).
 
 Si no tenés `curl` en el host:
 

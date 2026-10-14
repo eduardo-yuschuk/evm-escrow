@@ -207,3 +207,18 @@ El autor descartó `via_ir` y `unchecked`, y quedó registrado en `docs/gas.md` 
 - **Apagado con el RPC colgado.** Un SIGTERM en ese estado tardaba 9 s, al borde del SIGKILL de `docker compose stop`. Ahora se cancelan las requests en curso, sin perder el timeout de viem, y sale en 0,14 s.
 - **Prueba del mismo bloque.** En el primer intento, con automine apagado, se perdieron dos de tres transacciones porque cada `cast` calculaba el mismo nonce. Se repitió con nonces explícitos.
 - **Fallback de timestamps.** Anvil incluye `blockTimestamp` en los logs, así que el camino alternativo con `getBlock` no se ejercitaba. Un script descartable le sacó el campo a la respuesta y comprobó que da los mismos timestamps, con un `getBlock` por bloque.
+
+## 19. Fase 7: API HTTP
+
+> sigamos con la fase 7
+
+**Output:** reloj de cadena, `toView`, `GET /escrows/:id`, `GET /escrows`, `GET /health` y el flag `MODE` para correr el indexador, la API o los dos en un proceso, en `api/src/clock.ts` y `api/src/http/`. El detalle está en el [ROADMAP](ROADMAP.md), fase 7, y el diseño en [DESIGN](DESIGN.md#endpoints).
+
+- **Verificación contra una cadena real.** Igual que en la fase 6, con un override de compose descartable. Se recorrieron los cuatro caminos, los límites exactos de `cancelDeadline` y `expiresAt` con `evm_setNextBlockTimestamp`, cada filtro y cada error, caídas del RPC y de Postgres, los tres modos y el apagado con una request en curso.
+- **Bug encontrado en `/health`.** La primera versión leía el checkpoint y el head en paralelo y recortaba el lag a 0, para tolerar la carrera entre las dos lecturas. Al reiniciar Anvil, un proceso `MODE=api` seguía informando `ok`. Ahora lee primero el checkpoint y después el head: un head menor solo puede significar que la cadena retrocedió, y se informa como `degraded` con lag negativo.
+- **Validación estricta pero práctica.**
+  - Un `limit` fuera de rango da `400` en lugar de recortarse, y un parámetro desconocido da `400` en lugar de ignorarse. Así, un error de tipeo no descarta un filtro sin avisar.
+  - Un parámetro vacío cuenta como ausente, porque la ruta del enunciado es `/escrows?sender=&beneficiary=&status=`.
+- **`total` consistente.** El conteo y la página salen de una misma transacción `REPEATABLE READ`, así coinciden aunque el indexador escriba entre las dos consultas.
+- **Ejemplos curl del README.** Tenían direcciones abreviadas (`0xf39f...2266`) que la API rechaza con `400`. Se reemplazaron por las completas y se verificaron contra el stack.
+- **Commits.** El ROADMAP preveía separar los endpoints de escrows y el de health, pero los dos se registran en `buildServer`. Se reagruparon y se comprobó, en una copia descartable, que cada commit compila solo.
