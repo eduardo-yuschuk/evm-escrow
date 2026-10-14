@@ -54,13 +54,22 @@ async function chainNow(clock: ChainClock): Promise<bigint> {
   }
 }
 
+/** Nor without the database: a failed or timed out query is unavailability, not a bug. */
+async function fromDatabase<T>(query: Promise<T>): Promise<T> {
+  try {
+    return await query;
+  } catch (error) {
+    throw new HttpError(503, "Cannot read the database", { cause: error });
+  }
+}
+
 export function escrowRoutes(
   app: FastifyInstance,
   { pool, clock }: { pool: Pool; clock: ChainClock },
 ): void {
   app.get("/escrows/:id", async (request) => {
     const { id } = parseInput(z.object({ id: idSchema }), request.params);
-    const [escrow, now] = await Promise.all([findEscrow(pool, id), chainNow(clock)]);
+    const [escrow, now] = await Promise.all([fromDatabase(findEscrow(pool, id)), chainNow(clock)]);
     if (!escrow) throw new HttpError(404, `Escrow ${id.toString()} not found`);
     return toView(escrow, now);
   });
@@ -68,7 +77,7 @@ export function escrowRoutes(
   app.get("/escrows", async (request) => {
     const query = parseInput(listQuerySchema, withoutEmptyValues(request.query));
     const now = await chainNow(clock);
-    const { escrows, total } = await listEscrows(pool, query, query, now);
+    const { escrows, total } = await fromDatabase(listEscrows(pool, query, query, now));
     return {
       items: escrows.map((escrow) => toView(escrow, now)),
       limit: query.limit,
