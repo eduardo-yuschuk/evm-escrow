@@ -41,7 +41,7 @@ La IA hizo 8 preguntas de diseño. Respuestas del autor:
 
 > crea ROADMAP.md con la ruta de desarrollo completo
 
-**Output:** [`ROADMAP.md`](../../ROADMAP.md), con 13 fases, criterios de "hecho" y commits sugeridos.
+**Output:** [`ROADMAP.md`](ROADMAP.md), con 13 fases, criterios de "hecho" y commits sugeridos.
 
 ## 5. Ajustes de stack
 
@@ -177,3 +177,19 @@ El autor descartó `via_ir` y `unchecked`, y quedó registrado en `docs/gas.md` 
 > sí, agregá la entrada 15 al README de docs/ai y mantengamos registrando todos los prompts como venimos haciendo
 
 **Output:** esta entrada. Desde acá, cada prompt se registra en este archivo junto con su resultado.
+
+## 16. Separar el README del diseño
+
+> vamos a sacar las decisiones de diseño del README.md y movela a docs/ai/DESIGN.md, también move el ROADMAP.md a docs/ia/ROADMAP.md y corregí el vínculo entre ambos. README.md de la carpeta raíz sólo debe tener información descriptiva breve del proyecto, los requisitos para ejecutarlo y los pasos para correr cada prueba
+
+**Output:** se interpretó `docs/ia/` como `docs/ai/`, la carpeta existente.
+- [`DESIGN.md`](DESIGN.md): todo el diseño que estaba en el README, sin cambios de contenido. Incluye arquitectura, versiones fijadas, servicios de compose, detalles de ejecución, contrato, API e indexador, decisiones, limitaciones, opcionales y mejoras.
+- [`ROADMAP.md`](ROADMAP.md): movido desde la raíz, con los vínculos a DESIGN, README y CHALLENGE corregidos.
+- [`README.md`](../../README.md): descripción breve, tabla de documentación, requisitos, cómo levantar el stack y los comandos de cada prueba (contrato, Slither, API, ABI, demo y curl).
+- Se actualizaron las referencias en `docs/gas.md`, `docs/slither.md`, `01-analisis-ambiguedades.md`, `avances/dia1.md` y un comentario de `EscrowTokens.t.sol`. Un chequeo automático confirmó que no quedan vínculos ni anclas rotos.
+
+## 17. Resumen de decisiones en el README final
+
+> anotemos para recordar hacer una versión final del README.md al terminar con el proyecto con una versión resumida de las decisiones de diseño. Si dejamos todo el detalle técnico completo en el README.md principal se vuelve muy abrumador. Propongo, para cuando terminemos, que el README.md principal puntee todas las decisiones de diseño pero haga referencia a la versión completa y desarrollada en DESIGN.md.
+
+**Output:** tarea agregada en la fase 12 del [ROADMAP](ROADMAP.md), dentro de *README final*. El README va a puntear todas las decisiones, una línea cada una, con vínculo a su desarrollo en [DESIGN](DESIGN.md). Así cumple con lo que pide el enunciado sin cargarlo con el detalle técnico.

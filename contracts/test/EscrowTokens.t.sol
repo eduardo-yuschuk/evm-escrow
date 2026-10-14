@@ -138,7 +138,7 @@ contract EscrowTokensTest is EscrowTestBase {
 
     /// @dev Documents the accepted limitation: while the sender is blacklisted, every path that
     ///      returns funds to them reverts, and after expiration the beneficiary cannot confirm.
-    ///      Funds stay locked until the token unblocks the sender. See README, "Limitaciones conocidas".
+    ///      Funds stay locked until the token unblocks the sender. See docs/ai/DESIGN.md, "Limitaciones conocidas".
     function test_KnownLimitation_BlacklistedSenderLocksFunds() public {
         BlacklistERC20 usdc = new BlacklistERC20();
         _fund(address(usdc), sender);

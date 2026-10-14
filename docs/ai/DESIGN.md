@@ -1,0 +1,375 @@
+# Diseño y decisiones
+
+Diseño del contrato y del indexador, decisiones sobre las ambigüedades del enunciado y limitaciones conocidas. Cómo correr el proyecto y sus pruebas está en el [README](../../README.md), la ruta de desarrollo en el [ROADMAP](ROADMAP.md) y el enunciado en [`CHALLENGE.md`](../../CHALLENGE.md).
+
+## Índice
+
+- [Arquitectura](#arquitectura)
+- [Ejecución y tests](#ejecución-y-tests)
+- [Contrato](#contrato)
+- [API e indexador](#api-e-indexador)
+- [Decisiones sobre ambigüedades del enunciado](#decisiones-sobre-ambigüedades-del-enunciado)
+- [Limitaciones conocidas](#limitaciones-conocidas)
+- [Puntos opcionales elegidos](#puntos-opcionales-elegidos)
+- [Qué mejoraría con más tiempo](#qué-mejoraría-con-más-tiempo)
+
+## Arquitectura
+
+```
+┌────────────┐   txs (wallet)   ┌───────────────┐
+│  Usuarios  │ ───────────────▶ │  Escrow.sol   │  (Anvil local / testnet)
+└────────────┘                  └───────┬───────┘
+                                        │ eventos (eth_getLogs)
+                                        ▼
+                               ┌─────────────────┐   upserts + checkpoint
+                               │   Indexador     │ ─────────────────────▶ ┌──────────┐
+                               └─────────────────┘   (una tx de DB)       │ Postgres │
+                               ┌─────────────────┐ ◀───────────────────── └──────────┘
+   curl / HTTP  ─────────────▶ │   API (HTTP)    │   lecturas
+                               └─────────────────┘ ── timestamp del último bloque ──▶ RPC
+```
+
+| Pieza | Tecnología |
+| --- | --- |
+| Contrato | Solidity 0.8.37 (`evm_version = "cancun"`), Foundry, OpenZeppelin v5 (`SafeERC20`, `ReentrancyGuardTransient`) |
+| API / indexador | Node.js + TypeScript, viem |
+| Dependencias Solidity | Soldeer (integrado en `forge`): sin submódulos de git |
+| Base de datos | Postgres |
+| Nodo local | Anvil |
+| Ejecución | **Solo Docker Compose:** no hace falta Node, Foundry, solc ni Python en el host |
+
+Versiones fijadas:
+
+| Componente | Versión |
+| --- | --- |
+| Foundry (imagen `ghcr.io/foundry-rs/foundry`) | `v1.8.3` |
+| solc | `0.8.37`, `evm_version = "cancun"` |
+| forge-std / OpenZeppelin Contracts | `1.16.2` / `5.7.0` (`soldeer.lock`) |
+| Node (imagen) | `node:24.21.0-bookworm-slim` |
+| Dependencias npm | exactas, en `package-lock.json` |
+
+Estructura prevista del repo:
+
+```
+contracts/          proyecto Foundry (src/, test/, script/) + Dockerfile
+api/                API + indexador + demo (TypeScript) + Dockerfile
+docker/             Dockerfile de Slither, init de Postgres
+docs/               hallazgos de Slither, gas report, outputs de IA
+docker-compose.yml
+.env.example        overrides opcionales (puertos, confirmaciones); todo tiene default
+```
+
+### Servicios de compose
+
+| Servicio | Rol | Arranca con `up` |
+| --- | --- | --- |
+| `anvil` | Nodo local | sí |
+| `deployer` | One-shot: deploya y escribe `deployments/31337.json` en un volumen compartido | sí |
+| `postgres` | Base de datos (y base `escrow_test` para los tests) | sí |
+| `api` | Indexador + API HTTP | sí |
+| `demo` | Flujo completo de punta a punta | no (`run`) |
+| `forge` | Foundry contra `./contracts` montado: build, test, fmt, snapshot, coverage | no (`run`) |
+| `npm` | Node contra `./api` montado: test, lint, typecheck, generación de ABI | no (`run`) |
+| `slither` | Análisis estático | no (`run`) |
+
+Los servicios de herramientas usan `profiles`, así que `docker compose up` no los arranca. `docker compose run --rm <servicio> …` activa su perfil automáticamente.
+
+## Ejecución y tests
+
+- **Código montado.** `forge` y `npm` montan el código del host, así que corren sobre la copia de trabajo actual sin reconstruir imágenes.
+- **Tests de integración de la API.** Levantan su propio Anvil efímero (el binario va incluido en la imagen) y usan la base `escrow_test` del servicio `postgres`. No tocan el stack principal.
+- **Fuzz e invariantes.** El handler de invariantes mantiene un modelo de referencia de cada escrow, predice el resultado de cada llamada (éxito o el error exacto) y lo compara con el contrato. Por eso corre con `fail_on_revert = true`. El perfil por defecto hace 256 runs; el perfil `ci` hace 10.000 runs de fuzz y 512 × 100 de invariantes.
+- **Gas.** Cada `forge test` reescribe `contracts/snapshots/EscrowGasTest.json` con el gas de cada operación; los cambios aparecen en el diff. Ver [`docs/gas.md`](../gas.md).
+- **Dependencias.** La primera vez, o cuando cambia el lockfile, el entrypoint instala las dependencias desde el contenedor en `api/node_modules/` y `contracts/dependencies/`. Las dos carpetas están ignoradas por git.
+- **Permisos.** Los servicios `forge` y `npm` arrancan como root y el entrypoint baja, con `setpriv`, al dueño del código montado. Así los archivos generados quedan del usuario del host con Docker clásico, rootless o Docker Desktop, sin configurar nada.
+- **Demo.** El vencimiento se simula con `evm_increaseTime` y `evm_mine`: la API informa `ExpiredRecoverable` sin que nadie haya tocado el contrato. Cada escrow se crea justo antes de su acción, y el de vencimiento va al final, porque avanzar el tiempo del nodo afecta a todos los escrows a la vez.
+
+## Contrato
+
+### Interfaz
+
+```solidity
+function createEscrow(address token, address beneficiary, uint256 amount) external returns (uint256 id);
+function cancel(uint256 id) external;          // sender, t <  createdAt + CANCEL_WINDOW
+function confirm(uint256 id) external;         // beneficiary, t <  createdAt + TTL
+function reject(uint256 id) external;          // beneficiary, t <  createdAt + TTL
+function recoverExpired(uint256 id) external;  // sender, t >= createdAt + TTL
+function getEscrow(uint256 id) external view returns (EscrowView memory);
+function escrowCount() external view returns (uint256);   // ids válidos: 1..escrowCount()
+function CANCEL_WINDOW() external view returns (uint64);
+function TTL() external view returns (uint64);
+```
+
+La interfaz completa, con NatSpec, está en [`contracts/src/IEscrow.sol`](../../contracts/src/IEscrow.sol).
+
+- **Token como `address`:** se pasa como `address`, igual que en la firma del evento que pide el enunciado.
+- **Timestamps en `uint64`:** alcanzan de sobra y permiten empaquetarlos.
+
+`CANCEL_WINDOW = 2 hours` y `TTL = 7 days` son `immutable` y se fijan en el constructor, que revierte con `InvalidWindows` salvo que `0 < cancelWindow < ttl`.
+
+- **Por qué `immutable` y no constantes:** permite deployar en una testnet con ventanas cortas (por ejemplo, minutos) para mostrar el vencimiento en vivo, donde no se puede avanzar el tiempo del nodo. Los tests y el demo en Anvil usan los valores reales y avanzan el tiempo (`vm.warp`, `evm_increaseTime`).
+- **Sin tope superior para `ttl`.** Se evaluó y se descartó:
+  - Un `ttl` absurdo, del orden de 2⁶⁴ − `block.timestamp` (unos 584 mil millones de años), haría desbordar `createdAt + TTL` y todo `createEscrow` revertiría con `Panic(0x11)`. Nunca entraría un depósito, y los escrows ya creados no se verían afectados, porque su `createdAt` quedó fijo cuando la suma no desbordaba.
+  - El riesgo más realista es un `ttl` grande por error de unidades, que trabaría los fondos en la práctica si el beneficiario no responde. Se mitiga revisando el script de deploy, y `TTL()` es público e inmutable: cualquiera puede verificarlo antes de depositar.
+  - Un tope de negocio, como `MAX_TTL`, sería un valor arbitrario más que justificar.
+
+### Estados
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Pending: createEscrow
+    Pending --> CancelledBySender: cancel (sender, t < +2h)
+    Pending --> Released: confirm (beneficiary, t < +7d)
+    Pending --> Rejected: reject (beneficiary, t < +7d)
+    Pending --> Expired: recoverExpired (sender, t >= +7d)
+```
+
+`enum Status { None, Pending, Released, Rejected, CancelledBySender, Expired }`. El `None = 0` distingue un id inexistente de uno real. Todos los estados distintos de `Pending` son finales.
+
+### Eventos
+
+```solidity
+event EscrowCreated(
+    uint256 indexed id, address indexed sender, address indexed beneficiary,
+    address token, uint256 amount, uint64 cancelDeadline, uint64 expiresAt
+);
+event EscrowCancelled(uint256 indexed id);
+event EscrowReleased(uint256 indexed id);
+event EscrowRejected(uint256 indexed id);
+event EscrowExpired(uint256 indexed id);
+```
+
+- `amount` es el monto **realmente recibido** (ver fee-on-transfer).
+- `cancelDeadline` y `expiresAt` son el **primer instante inválido** de su ventana, no el último válido. Las comparaciones son `<` y `>=`.
+- Los eventos de resolución solo llevan `id`. El destino de los fondos se deduce del tipo de evento, y el timestamp y el hash salen del log o del bloque. La API reconstruye todo sin leer storage.
+- **Trade-off:** agregar el destinatario o el monto a los eventos de resolución le ahorraría trabajo al indexador, pero cuesta gas en cada resolución. Se prefirió que el indexador haga el cruce con los datos de `EscrowCreated`.
+
+### Custom errors
+
+| Error | Cuándo |
+| --- | --- |
+| `InvalidWindows(cancelWindow, ttl)` | parámetros del constructor fuera de `0 < cancelWindow < ttl` |
+| `ZeroAmount()` | `amount == 0` |
+| `InvalidBeneficiary(beneficiary)` | `beneficiary == address(0)` o `beneficiary == msg.sender` |
+| `InvalidToken(token)` | `token` sin código, incluida `address(0)` |
+| `NothingReceived()` | el contrato recibió 0 tokens (fee del 100 %) |
+| `EscrowNotFound(id)` | id inexistente, en acciones y en `getEscrow` |
+| `NotPending(id, status)` | el escrow ya está resuelto |
+| `NotSender(id, caller)` / `NotBeneficiary(id, caller)` | la parte equivocada intenta actuar |
+| `CancelWindowClosed(id, cancelDeadline)` | cancelar con `t >= cancelDeadline` |
+| `EscrowHasExpired(id, expiresAt)` | confirmar o rechazar con `t >= expiresAt` |
+| `NotExpiredYet(id, expiresAt)` | recuperar con `t < expiresAt` |
+
+El error de vencimiento no puede llamarse `EscrowExpired` porque colisiona con el nombre del evento.
+
+### Seguridad
+
+- **Checks-effects-interactions.** Al resolver, el orden es: chequeos, estado final, evento y recién al final la transferencia.
+  - Además, todas las funciones que mueven fondos son `nonReentrant`, con `ReentrancyGuardTransient` (transient storage de Cancun, más barato que un slot de storage). Así se cubren tokens con hooks (ERC-777) y tokens maliciosos.
+  - `createEscrow` es la excepción a CEI: necesita transferir **antes** de escribir el escrow para medir lo recibido. La protege `nonReentrant`.
+- **`SafeERC20`.** Soporta tokens que no devuelven `bool` (USDT).
+  - Revierte con `SafeERC20FailedOperation(token)` si el token es una dirección sin código: cuando la llamada no devuelve datos, exige `extcodesize(token) > 0` (OZ 5.7, `SafeERC20._safeTransferFrom`). Verificado con un test contra un EOA.
+  - Aun así, `createEscrow` valida `token.code.length > 0` antes de cualquier llamada externa. El motivo no es seguridad sino claridad: el `balanceOf` previo revertiría sin motivo (retorno vacío imposible de decodificar), y así el error es `InvalidToken(token)`, que también cubre `address(0)`.
+- **Sin owner, sin pausa, sin upgrade, sin `rescue`.** No existe ninguna ruta por la que alguien que no sea el sender o el beneficiary mueva fondos de un escrow, y cada uno solo dentro de su ventana.
+- **Ids secuenciales empezando en 1,** asignados por el contrato. No hay ids elegidos por el que llama, así que no se pueden ocupar ids ajenos por front-running.
+- **Fee-on-transfer.** Se mide `balanceOf` antes y después del `transferFrom` y se guarda lo recibido. Un escrow nunca puede pagar más de lo que aportó, así que no puede drenar fondos de otros escrows del mismo token.
+
+### Guard de reentrada: `ReentrancyGuardTransient`
+
+Da la misma protección que `ReentrancyGuard`, pero guarda el flag en transient storage (EIP-1153) en lugar de un slot de storage. Como el contrato ya está fijado a Cancun por `evm_version`, no agrega ninguna restricción.
+
+| | `ReentrancyGuard` | `ReentrancyGuardTransient` |
+| --- | --- | --- |
+| Dónde guarda el flag | Slot de storage | Transient storage, que se borra al terminar la transacción |
+| Opcodes | `SLOAD` frío, `SSTORE` 1→2 y `SSTORE` 2→1 | `TLOAD` y 2 × `TSTORE` |
+| Gas medido por llamada | +5.207 | +502 |
+| Gas neto con refund | ~2.400 (refund de 2.800, con tope del 20 % del gas de la transacción) | ~500 |
+
+**Ahorro:** entre ~1.900 y ~4.700 de gas en cada `createEscrow`, `cancel`, `confirm`, `reject` y `recoverExpired`.
+
+Medición: una función mínima protegida por cada guard, contra un contrato frío, comparada con la misma función sin guard (`forge test --isolate`, solc 0.8.37, optimizer de 200 runs).
+
+### Storage
+
+Los deadlines no se guardan: se derivan de `createdAt` y las `immutable`, y `getEscrow` los devuelve calculados. Layout de 4 slots:
+
+| Slot | Campos |
+| --- | --- |
+| 0 | `sender` (20 B) + `createdAt uint64` (8 B) + `status uint8` (1 B) |
+| 1 | `beneficiary` (20 B) |
+| 2 | `token` (20 B) |
+| 3 | `amount uint256` |
+
+Se descartó empaquetar `amount` como `uint96` junto a `beneficiary` para bajar a 3 slots. Limita los montos a unos 7.9e28 unidades, y hay tokens con supply mayor (por ejemplo, de 18 decimales y cientos de billones de unidades). El gas medido, incluida esta variante (−22.059 en `createEscrow`), está en [`docs/gas.md`](../gas.md).
+
+### Deploy
+
+[`script/Deploy.s.sol`](../../contracts/script/Deploy.s.sol) deploya el `Escrow` y escribe `deployments/<chainId>.json`, que lee el indexador:
+
+```json
+{
+  "cancelWindow": 7200,
+  "chainId": 31337,
+  "escrow": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+  "startBlock": 0,
+  "startBlockHash": "0x72e1…",
+  "token": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+  "ttl": 604800
+}
+```
+
+- **`startBlock`** es el último bloque minado antes del deploy. El contrato queda en un bloque posterior, así que indexar desde ahí no pierde eventos.
+- **`startBlockHash`** identifica la cadena: un Anvil reiniciado tiene otro hash en el mismo número de bloque, aunque el contrato quede en la misma dirección. `blockhash` devuelve cero para el bloque actual, así que se calcula del header (`vm.getRawBlockHeader`).
+- **Variables de entorno opcionales:**
+
+  | Variable | Default | Uso |
+  | --- | --- | --- |
+  | `ESCROW_CANCEL_WINDOW` | `7200` (2 h) | Ventana de cancelación, en segundos |
+  | `ESCROW_TTL` | `604800` (7 días) | Vencimiento, en segundos |
+  | `DEPLOY_MOCK_TOKEN` | `true` solo en la chain `31337` | Deploya un `MockERC20` y le da 1.000.000 de tokens a cada una de las 10 cuentas de Anvil. Si no se deploya, `token` queda en `0x000…0`. |
+
+- **Dry run:** sin `--broadcast` no escribe el archivo, porque no deployó nada.
+- **ABI tipado para la API:** `docker compose run --rm npm run abi` lee los artefactos de `contracts/out/` y genera [`api/src/generated/contracts.ts`](../../api/src/generated/contracts.ts), con el ABI y el bytecode de `Escrow` y `MockERC20` declarados `as const` para que viem infiera los tipos. El archivo se commitea, así la imagen de la API no compila contratos. Hay que regenerarlo cuando cambia el contrato; CI lo verifica.
+
+## API e indexador
+
+### Indexador
+
+- **Lectura por polling** con `eth_getLogs` en rangos acotados, desde `checkpoint + 1` hasta `head - CONFIRMATIONS`. Se eligió en lugar de una suscripción WebSocket porque permite retomar de forma determinística y no pierde eventos si el socket se corta.
+- **Atomicidad.** Por cada rango, en **una sola transacción de DB** se insertan los eventos crudos, se aplican a la proyección `escrows` y se avanza el checkpoint. Si el proceso muere a mitad de camino, no queda nada a medias.
+- **Idempotencia.**
+  - La tabla `events` tiene `UNIQUE (tx_hash, log_index)`, y un evento repetido se ignora con `ON CONFLICT DO NOTHING`.
+  - `EscrowCreated` hace upsert por `id`.
+  - Las transiciones solo se aplican si el escrow sigue `Pending`. Reprocesar un rango no duplica ni corrompe nada.
+- **Reanudación.** El checkpoint (`last_indexed_block`) vive en Postgres. Al arrancar se lee de ahí o, la primera vez, del `startBlock` del [archivo de deploy](#deploy).
+- **Cambio de cadena.** Anvil es efímero, mientras que Postgres puede conservar datos entre reinicios del stack.
+  - Por eso `indexer_state` guarda `chainId`, la dirección del contrato y `startBlockHash`, y al arrancar los compara con la cadena.
+  - Si no coinciden, con `RESET_ON_CHAIN_MISMATCH=true` (default en compose) se vacía la proyección y se reindexa. Si no, el proceso aborta con un error claro.
+- **Reorgs: esperar N confirmaciones.** Solo se indexan bloques con al menos `CONFIRMATIONS` bloques encima.
+  - Supuesto: no hay reorgs más profundos que N. Con eso el checkpoint nunca retrocede y la clave `(tx_hash, log_index)` es estable.
+  - Valores por defecto: `CONFIRMATIONS=0` en Anvil, porque no hay reorgs y con automine no se minan bloques sin transacciones, así que con N > 0 los últimos eventos nunca se confirmarían. En una testnet o mainnet, alrededor de 12, o usar el tag `finalized`.
+  - Costo: la API refleja la cadena con unos N bloques de atraso.
+
+### Estado derivado del tiempo
+
+- **Reloj de referencia.** "Ahora" es el **timestamp del último bloque de la cadena**, no el reloj del servidor. Si no, el demo que avanza el tiempo de Anvil mostraría estados incorrectos, y en producción esta elección es coherente con lo que va a aceptar o rechazar el contrato.
+- **`onchainStatus`.** Es lo que dicen los eventos indexados.
+- **`status` (efectivo).** Es igual a `onchainStatus`, salvo un caso: `Pending` con `now >= expiresAt` pasa a **`ExpiredRecoverable`**.
+- **`Expired`** queda reservado para el estado final on-chain, después de `recoverExpired`.
+- **Flags por escrow.**
+  - `canCancel`: `Pending && now < cancelDeadline`
+  - `canConfirm` y `canReject`: `Pending && now < expiresAt`
+  - `canRecover`: `Pending && now >= expiresAt`
+
+### Endpoints
+
+#### `GET /escrows/:id`
+
+```json
+{
+  "id": "1",
+  "sender": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "beneficiary": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+  "token": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+  "amount": "1000000000000000000",
+  "createdAt": 1760000000,
+  "cancelDeadline": 1760007200,
+  "expiresAt": 1760604800,
+  "onchainStatus": "Pending",
+  "status": "Pending",
+  "canCancel": true,
+  "canConfirm": true,
+  "canReject": true,
+  "canRecover": false,
+  "createdTx": "0x…",
+  "resolvedTx": null,
+  "resolvedAt": null,
+  "now": 1760000300
+}
+```
+
+- `id` y `amount` van como **string**, porque un `uint256` excede `Number.MAX_SAFE_INTEGER`.
+- Las direcciones se devuelven con checksum EIP-55.
+- Si el id no existe, devuelve `404`.
+
+#### `GET /escrows?sender=&beneficiary=&status=&limit=&offset=`
+
+- **Filtros.** Todos son opcionales. Las direcciones no distinguen mayúsculas. `status` filtra por **estado efectivo**, incluido `ExpiredRecoverable`, que se calcula en SQL comparando `expires_at` con el timestamp de la cadena.
+- **Paginación.** `limit` vale 20 por defecto, con máximo 100. `offset` vale 0 por defecto. Se ordena por `id` descendente.
+- **Respuesta:** `{ "items": [...], "limit": 20, "offset": 0, "total": 42 }`.
+- Un `status` o una dirección inválidos devuelven `400`.
+
+#### `GET /health`
+
+```json
+{ "status": "ok", "db": "ok", "rpc": "ok", "lastIndexedBlock": 1234, "chainHead": 1234, "lag": 0 }
+```
+
+`status` pasa a `degraded` si la DB o el RPC no responden, o si el lag supera un umbral configurable. En ese caso el código HTTP es `503`.
+
+## Decisiones sobre ambigüedades del enunciado
+
+| # | Ambigüedad o inconsistencia | Decisión |
+| --- | --- | --- |
+| 1 | Qué pasa justo en `createdAt + 2h` y `createdAt + 7d` | **Estricto:** cancelar `t < +2h`, confirmar y rechazar `t < +7d`, recuperar `t >= +7d`. Es literal con "antes de" y "desde", y a los 7 días no se solapan. Los tests cubren `-1 s`, el segundo exacto y `+1 s`. |
+| 2 | Semántica de `cancelDeadline` y `expiresAt` | Primer instante **inválido** de cada ventana. |
+| 3 | Entre 0 y 2 h el sender puede cancelar y el beneficiary confirmar o rechazar a la vez | **Se respeta la tabla:** el beneficiary actúa desde t = 0. Gana la primera transacción minada, y la carrera queda documentada en [Limitaciones](#limitaciones-conocidas). |
+| 4 | "Si el beneficiario no confirmó **ni canceló**" | Se lee "ni rechazó": el beneficiary no cancela. |
+| 5 | "La operación queda **cancelada**" al vencer, pero el estado es `Expired` | El estado es `Expired`. "Cancelada" se toma en sentido coloquial. |
+| 6 | "Vencido" designa dos cosas | `ExpiredRecoverable` es el estado derivado en la API y `Expired` el final on-chain. |
+| 7 | "Cualquier ERC-20", pero fee-on-transfer figura como opcional | Se registra el monto **recibido**. Ignorarlo permitiría drenar otros escrows. |
+| 8 | El invariante del enunciado dice que el balance "iguala" la suma de pendientes | Es falso con donaciones directas al contrato. Se testea `balanceOf(token) >= Σ amount pendientes`, por token. |
+| 9 | "Ni siquiera el owner" supone un owner | **Por ahora no hay owner:** el contrato no necesita administración para funcionar. Queda pendiente agregar un owner que solo controle la creación: pausar nuevos escrows y mantener una whitelist de tokens, sin poder tocar escrows existentes (ver [ROADMAP](ROADMAP.md#pendientes-decididos)). |
+| 10 | Cómo se genera el `id` | Contador secuencial que arranca en 1. |
+| 11 | Qué devuelve `getEscrow` para un id inexistente | Revierte con `EscrowNotFound`. |
+| 12 | No se valida el token | Se exige `token != address(0)` y que tenga código. |
+| 13 | Ventanas `immutable` sin validar | El constructor exige `0 < cancelWindow < ttl`. |
+| 14 | Quién puede recuperar un escrow vencido | Solo el sender, según la tabla. |
+| 15 | Cómo se transfieren los fondos al resolver | **Push:** se transfiere directo en la misma llamada, fiel a la tabla. Ver limitación de blacklists. |
+| 16 | Datos de los eventos de resolución | Alcanza con `id`. El timestamp y el tx hash salen del log. |
+| 17 | Contra qué reloj se calcula el estado derivado | Timestamp del último bloque de la cadena. |
+| 18 | "Suscribirse" contra "retomar sin perder eventos" | Polling con `getLogs` y checkpoint transaccional. |
+| 19 | Estrategia de reorgs | N confirmaciones configurables: 0 en Anvil, alrededor de 12 en testnet. |
+| 20 | `status=` filtra el estado guardado o el derivado | El efectivo, el mismo que se devuelve. |
+| 21 | "Montos" en plural en `/escrows/:id` | Hay un solo monto, el recibido. Con fee tokens, la transferencia de salida también puede cobrar fee, y eso queda fuera del control del contrato. |
+| 22 | Formato de paginación y de los números | `limit`/`offset`. Los `uint256` van como string. |
+| 23 | Qué significa "estado del servicio" en `/health` | DB y RPC accesibles, último bloque indexado, head de la cadena y lag. |
+| 24 | "Vencer" en el script de demo | Avanzar el tiempo, mostrar `ExpiredRecoverable` y después llamar a `recoverExpired`. |
+| 25 | "Repositorio Git" contra "repo en GitHub" | GitHub. |
+| 26 | "Incluir outputs de prompts" | Carpeta `docs/ai/` con los prompts relevantes y sus respuestas. |
+| 27 | Qué tooling tiene el evaluador | Solo Docker. Todo, incluidos tests, lint, Slither y demo, corre con `docker compose`, y CI usa los mismos comandos. Las versiones están fijadas: imagen de Foundry, solc 0.8.37, Node y Postgres. |
+
+## Limitaciones conocidas
+
+- **Tokens con blacklist o pausa** (USDC, USDT). Comportamiento fijado por los tests `test_KnownLimitation_*` de `EscrowTokens.t.sol`.
+  - Si el sender está bloqueado, `reject` y `recoverExpired` revierten siempre y los fondos quedan trabados.
+  - Si el beneficiary está bloqueado, no puede confirmar, pero sí rechazar.
+  - Con push no tiene solución. Un patrón pull (acreditar saldo y `withdraw(to)`) lo mitiga a cambio de complejidad: ver [mejoras](#qué-mejoraría-con-más-tiempo).
+- **Tokens rebasing:** no soportados. El monto guardado se desfasa del balance real.
+- **Carrera entre 0 y 2 h.** Sender y beneficiary pueden adelantarse mutuamente con front-running. El contrato garantiza que solo una resolución tiene efecto. No garantiza cuál.
+- **`block.timestamp`:** el productor del bloque puede manipularlo unos pocos segundos. Es irrelevante con ventanas de horas y días.
+- **Reorgs más profundos que N:** fuera del modelo. Requerirían rollback por `blockHash`.
+
+## Puntos opcionales elegidos
+
+| Punto | Por qué |
+| --- | --- |
+| **Fuzz + invariantes** | Ataca directo el 30 % de seguridad. Un handler de Foundry ejecuta secuencias aleatorias de create, cancel, confirm, reject, recover y `warp`, con varios tokens incluidos uno fee-on-transfer. Invariantes: `balanceOf(token) >= Σ pendientes`, contabilidad exacta con donaciones, un estado final nunca cambia, lo pagado nunca supera lo depositado e ids consistentes con `escrowCount`. Además, cada llamada se compara con un modelo de referencia. |
+| **Fee-on-transfer** | Es necesario para que "cualquier ERC-20" sea seguro (ver decisión 7). |
+| **Slither + CI** | Slither corre en CI y sus hallazgos se comentan en [`docs/slither.md`](../slither.md), incluido lo que Slither no puede ver (reentrada a través del assembly de `SafeERC20`). GitHub Actions corre exactamente los mismos `docker compose run …` documentados en el [README](../../README.md#pruebas): fmt, tests, snapshot, Slither, lint, typecheck y tests de la API, más un smoke test con el demo. Si pasa en CI, pasa en cualquier máquina con Docker. |
+| **Gas report + storage** | Gas por operación medido y verificado contra recibos de Anvil, `.gas-snapshot` para regresiones y 7 variantes de optimización medidas con su veredicto, en [`docs/gas.md`](../gas.md). El layout de 4 slots y los deadlines derivados están justificados en [Storage](#storage). |
+
+Se descartaron:
+- **`permit` (EIP-2612):** suma superficie de ataque (hay que tolerar el front-running del permit) y no aporta a la seguridad.
+- **Webhooks:** son fáciles de agregar sobre la proyección, pero no se evalúan como núcleo.
+
+## Qué mejoraría con más tiempo
+
+- **Patrón pull** opcional para resolver el problema de los tokens con blacklist.
+- **Rollback de reorgs por `blockHash`** para indexar sin esperar confirmaciones.
+- **`createWithPermit`** (EIP-2612) con `try/catch` sobre el `permit`.
+- **Webhooks o SSE** cuando un escrow cambia de estado, con outbox transaccional en Postgres.
+- **Deploy en Sepolia** con ventanas cortas para la demo en vivo: está en *Pendientes decididos* del [ROADMAP](ROADMAP.md#pendientes-decididos).
+- **Paginación por cursor**, métricas Prometheus y rate limiting.
+- **Soporte multi-contrato o multi-chain** en el indexador.

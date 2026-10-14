@@ -40,12 +40,12 @@ Estado estable: el contrato ya tiene otros escrows del mismo token y quien recib
 
 ## Storage
 
-El layout y su justificación están en el [README, sección Storage](../README.md#storage). Lo que agregan las mediciones:
+El layout y su justificación están en el [DESIGN, sección Storage](ai/DESIGN.md#storage). Lo que agregan las mediciones:
 
 - **Dónde se va el gas de `createEscrow`.** Escribe 4 slots nuevos, de cero a no-cero, a 22.100 cada uno: 88.400 de 141.000, el 63 %. Por eso la única palanca grande es la cantidad de slots, no las micro-optimizaciones de código.
 - **Una sola escritura al resolver.** `status` comparte el slot 0 con `sender` y `createdAt`, así que cada resolución hace un único `SSTORE`, sobre un slot que ya leyó (2.900).
 - **Deadlines derivados.** Guardados como `uint64` entrarían en el espacio libre de los slots 1 y 2 sin agregar slots, pero sumarían operaciones de empaquetado al escribir y leer, y dos fuentes de verdad para el mismo dato. Derivarlos de `createdAt` y de las `immutable` cuesta unas pocas sumas, porque leer una `immutable` no accede a storage.
-- **`amount` como `uint96` (3 slots).** Medido abajo: ahorra 22.059 en `createEscrow` (−15,6 %). Se descartó por el límite de monto; ver el README.
+- **`amount` como `uint96` (3 slots).** Medido abajo: ahorra 22.059 en `createEscrow` (−15,6 %). Se descartó por el límite de monto; ver [DESIGN](ai/DESIGN.md#storage).
 
 ## Micro-optimizaciones evaluadas
 
@@ -67,7 +67,7 @@ Notas sobre las variantes:
 - **`via_ir`:** es la única variante que mejora todo: gas y tamaño. Pero el ahorro es menor al 2 %, cambia el pipeline del compilador con el que se revisó y testeó el contrato, y compila más lento. El autor decidió no aplicarla, junto con `unchecked`: no vale la pena.
 
 **Ya aplicadas desde el diseño:**
-- **`ReentrancyGuardTransient`:** ~1.900 a ~4.700 por llamada contra `ReentrancyGuard`. Ver la medición en el [README](../README.md#guard-de-reentrada-reentrancyguardtransient).
+- **`ReentrancyGuardTransient`:** ~1.900 a ~4.700 por llamada contra `ReentrancyGuard`. Ver la medición en [DESIGN](ai/DESIGN.md#guard-de-reentrada-reentrancyguardtransient).
 - **Ventanas `immutable`:** se leen del bytecode, sin `SLOAD`.
 - **Errores custom:** en lugar de strings.
 - **Eventos de resolución solo con `id`:** menos datos de log en cada resolución.

@@ -2,7 +2,7 @@
 
 _14/10/2026_
 
-Llevamos las fases 0 a 5 de 13 terminadas. El contrato está completo, testeado y auditado, y falta todo el backend: indexador, API, stack completo, demo y CI. El detalle de cada fase está en el [`ROADMAP.md`](../../../ROADMAP.md).
+Llevamos las fases 0 a 5 de 13 terminadas. El contrato está completo, testeado y auditado, y falta todo el backend: indexador, API, stack completo, demo y CI. El detalle de cada fase está en el [`ROADMAP.md`](../ROADMAP.md).
 
 ## Hecho (fases 0–5)
 

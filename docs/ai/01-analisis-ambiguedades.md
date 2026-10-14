@@ -2,7 +2,7 @@
 
 > Prompt: *"busca inconsistencias, errores y ambiguedades en la definición de CHALLENGE.md"*
 >
-> Output de Claude, sin cambios de contenido. Las decisiones finales están en la tabla *Decisiones sobre ambigüedades del enunciado* del [README](../../README.md). Donde difieren, manda el README.
+> Output de Claude, sin cambios de contenido. Las decisiones finales están en la tabla *Decisiones sobre ambigüedades del enunciado* de [DESIGN](DESIGN.md#decisiones-sobre-ambigüedades-del-enunciado). Donde difieren, manda DESIGN.
 
 Cada punto trae una decisión sugerida para documentar en el README. Los más importantes van primero.
 

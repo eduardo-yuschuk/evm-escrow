@@ -48,7 +48,7 @@ Primera corrida, sin exclusiones de detectores: 9 resultados de 3 detectores.
 ### `timestamp`
 
 - **Qué busca el detector:** lógica que depende de `block.timestamp`, porque el productor del bloque puede moverlo algunos segundos.
-- **Por qué se acepta:** las ventanas de tiempo son la lógica del contrato, y un desvío de segundos es irrelevante frente a 2 horas y 7 días. Está documentado en *Limitaciones conocidas* del README.
+- **Por qué se acepta:** las ventanas de tiempo son la lógica del contrato, y un desvío de segundos es irrelevante frente a 2 horas y 7 días. Está documentado en *Limitaciones conocidas* de [DESIGN](ai/DESIGN.md#limitaciones-conocidas).
 - **Cómo se cubre:** los límites exactos (−1 s, exacto y +1 s) se testean en `EscrowTimeWindows.t.sol`, en los fuzz de `EscrowFuzz.t.sol` y en los invariantes, con `warpToDeadline`.
 
 ### `naming-convention`
