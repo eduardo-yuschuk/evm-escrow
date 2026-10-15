@@ -286,7 +286,7 @@ En una testnet no se puede adelantar el reloj del nodo, así que para ver un ven
 - **Claves fuera del repo.** El deploy y la demo leen `.env.sepolia`, ignorado por git: la clave del sender, que también deploya, la del beneficiary y la API key de Etherscan. Los comandos no llevan secretos, así que no quedan en el historial del shell. El RPC queda guardado en `contracts/cache/`, también ignorado.
 - **Deploy:** el mismo `deploy.sh` del stack local, con `--verify` si hay API key de Etherscan, y el mismo chequeo de idempotencia: si el archivo ya describe Sepolia, no deploya.
   - **El gas lo estima el nodo** (`--skip-simulation`, que hace que forge use `eth_estimateGas`). La simulación propia de forge cobra los costos de gas del target de compilación, `cancun`, y Sepolia ya cobra mucho más por crear un contrato: 6.545.373 de gas para el Escrow en lugar de 933.537. El primer deploy real falló por eso, con las dos creaciones sin gas. Se verificó contra Sepolia que el hash calculado del header (`vm.getRawBlockHeader`) coincide con el real, que es lo que compara el guard de cadena.
-- **Demo:** la misma de Anvil, en modo red real. Con 12 confirmaciones cada paso tarda unos 3 minutos, y la corrida completa, cerca de media hora.
+- **Demo:** la misma de Anvil, en modo red real. Con 12 confirmaciones cada paso tarda unos 2,5 minutos, y la corrida completa, cerca de media hora: la primera tardó 29 minutos (salida en el [README](../../README.md#sepolia)).
 
 ### Monad testnet
 

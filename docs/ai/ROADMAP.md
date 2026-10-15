@@ -757,7 +757,10 @@ Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose
     - La API contra Sepolia arrancó sin claves: el guard de cadena pasó y `/health` dio `ok` con lag 12, el de las confirmaciones.
     - Las transacciones de la demo también cuestan unas 3 veces más que con Cancun, según `eth_estimateGas`: 241.527 un `mint` y 129.390 un `approve`.
   - **Primera corrida de la demo: rechaza las claves.** Exigía el prefijo `0x`, que las billeteras suelen omitir al exportar; forge acepta las dos formas, y por eso el deploy había pasado con la misma clave. Ahora la demo también las acepta sin `0x` y con espacios alrededor. Comprobado en el stack local con las claves de Anvil sin `0x`.
-  - [ ] **Pendiente:** la corrida de la demo en Sepolia, que corre el autor con sus claves, y su salida en el README.
+  - [x] **Demo en Sepolia: OK.** Los cuatro caminos, escrows 4 a 7, con código 0. La salida está en el [README](../../README.md#sepolia).
+    - Tardó unos 29 minutos: del `mint` (bloque 11.922.402) al `recoverExpired` hay 1.572 s, más la espera de las confirmaciones del último paso. Cada paso, de una transacción a la siguiente, tardó 156 s.
+    - Los escrows 1 a 3 son anteriores, de otra cuenta (`0x2025…311a`). El sender ya tenía 8 MOCK, así que la demo minteó solo 992.
+    - D se mostró como `ExpiredRecoverable` apenas la cabeza pasó el vencimiento, porque el reloj de la API es el último bloque y no el indexado: el `recoverExpired` salió 12 s después del vencimiento.
 - [ ] **Demo en Monad testnet,** por **decisión del autor:** en Sepolia la demo tarda media hora. Diseño en [DESIGN](DESIGN.md#monad-testnet).
   - **Medido contra el RPC público:** bloques cada 0,3 s, `finalized` 2 bloques detrás de `latest`, `eth_getLogs` de hasta 100 bloques, `TSTORE` y `MCOPY` soportados, y deploy del Escrow por 941.725 de gas, casi lo mismo que en Cancun.
   - **`docker-compose.monad.yml`:** la misma estructura que el de Sepolia, con la API en el puerto 3002, 10 confirmaciones, `BATCH_SIZE=100`, `HEALTH_MAX_LAG=50` y ventanas de 60 y 120 s. Claves en `.env.monad` ([plantilla](../../.env.monad.example)).

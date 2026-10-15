@@ -251,6 +251,37 @@ La API espera 12 confirmaciones, así que refleja la cadena con unos 2,5 minutos
 3. Deployar y verificar: `docker compose -f docker-compose.sepolia.yml run --rm deploy`. Las ventanas se cambian con `SEPOLIA_CANCEL_WINDOW` y `SEPOLIA_TTL` en `.env`.
 4. Correr la demo: `docker compose -f docker-compose.sepolia.yml run --rm demo`. Es la misma de Anvil, pero espera las confirmaciones y el vencimiento en tiempo real: tarda cerca de media hora.
 
+Salida de la corrida contra el contrato deployado. Tardó unos 29 minutos, unos 2,5 por paso:
+
+```
+Escrow demo: API http://api:3000, chain 11155111
+  escrow       0x9a3b2D1C29c049F65875b6DfA0Cf869485625055
+  token        0xbCb0FcD74C568Be777E86734db21d35EeB2C826e
+  sender       0x347b7762aaA574fA1c38E4464F8Bc72CdA3Ca87b  SENDER_PRIVATE_KEY
+  beneficiary  0x7651987FB928ce45AcFB3b6b3f1C0ED498fb2844  BENEFICIARY_PRIVATE_KEY
+  windows      cancel 5 min, expiry 10 min
+Each step waits for 12 confirmations, and D waits until it expires: this takes a while.
+
+mint 992 MOCK
+approve 1000 MOCK
+A  create 100 MOCK   #4   Pending             can cancel, confirm, reject
+   confirm           #4   Released            100 MOCK to the beneficiary
+B  create 200 MOCK   #5   Pending             can cancel, confirm, reject
+   reject            #5   Rejected            200 MOCK back to the sender
+C  create 300 MOCK   #6   Pending             can cancel, confirm, reject
+   cancel            #6   CancelledBySender   300 MOCK back to the sender
+D  create 400 MOCK   #7   Pending             can cancel, confirm, reject
+   wait for expiry   #7   ExpiredRecoverable  on-chain Pending, can recover
+   recoverExpired    #7   Expired             400 MOCK back to the sender
+
+Every state matched. The full views, from the host:
+  curl "http://localhost:3001/escrows?sender=0x347b7762aaA574fA1c38E4464F8Bc72CdA3Ca87b&limit=4"
+```
+
+- **Los ids arrancan en 4** porque los escrows 1 a 3 se habían creado antes desde otra cuenta.
+- **La demo minteó 992 MOCK y no 1.000,** porque el sender ya tenía 8: mintea solo lo que falta.
+- **D aparece como `ExpiredRecoverable` apenas vence,** aunque la API indexa con 12 bloques de atraso: el reloj de la API es el último bloque, no el último indexado. El `recoverExpired` salió 12 s después del vencimiento.
+
 ## Monad testnet
 
 En Sepolia la demo tarda cerca de media hora, porque cada paso espera 12 bloques de 12 s. Monad testnet hace un bloque cada 0,3 s y lo finaliza dos bloques después, así que la misma demo tarda unos 3 minutos. Todo está en [`docker-compose.monad.yml`](docker-compose.monad.yml), otro proyecto aparte, con su propia base y la API en el puerto 3002. El diseño está en [DESIGN](docs/ai/DESIGN.md#monad-testnet).

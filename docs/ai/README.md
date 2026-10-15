@@ -508,3 +508,14 @@ Antes de empezar, la IA hizo cuatro preguntas, porque cambiaban el alcance y el 
   - En Anvil y en Sepolia nada cambia.
 - **Comprobado contra una testnet simulada** (Anvil con `--network monad` y el chain id 10143): deploy, un segundo deploy que no hace nada y la demo completa, con código 0. En el stack local, la demo, lint y typecheck siguen en verde. La simulación se borró: archivo de deploy, base y contenedores.
 - **Lo que falta:** el deploy y la demo reales, que corre el autor con sus claves.
+
+## 35. Sepolia: la demo
+
+> vamos primero con los resultados de la demo en sepolia: (salida de `docker compose -f docker-compose.sepolia.yml run --rm demo`: los cuatro caminos y `Every state matched`)
+
+**Output:** la demo pasó contra el contrato deployado. La salida quedó en el [README](../../README.md#sepolia), con tres notas que la IA verificó contra la API y la cadena:
+- **Los ids arrancan en 4:** los escrows 1 a 3 son anteriores, de otra cuenta.
+- **Mintea 992 y no 1.000:** el sender ya tenía 8 MOCK.
+- **D se ve como `ExpiredRecoverable` apenas vence,** aunque la API indexa con 12 bloques de atraso, porque su reloj es el último bloque. El `recoverExpired` salió 12 s después del vencimiento.
+
+Tiempos medidos en la cadena: unos 29 minutos en total y 156 s por paso. DESIGN decía "unos 3 minutos" por paso y pasó a decir "unos 2,5". La fase 12 del [ROADMAP](ROADMAP.md) marca el pendiente como hecho.
