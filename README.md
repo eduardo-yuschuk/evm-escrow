@@ -6,7 +6,7 @@ Escrow de tokens ERC-20 en Solidity, más una API/indexador en TypeScript que pr
 - **API e indexador** (`api/`): Node.js, TypeScript y viem. Indexa los eventos en Postgres y expone el estado de cada escrow por HTTP.
 - **Todo corre con Docker Compose:** nodo local (Anvil), deploy, base de datos, API, tests, análisis estático y demo.
 
-> **Estado:** el contrato, el indexador, la API HTTP y el stack completo (`docker compose up`) están terminados y testeados. La demo y CI están en desarrollo; los comandos de esas secciones son los previstos.
+> **Estado:** el contrato, el indexador, la API HTTP, el stack completo (`docker compose up`) y la demo están terminados y testeados. CI está en desarrollo.
 
 ## Documentación
 
@@ -54,7 +54,7 @@ Puertos, publicados solo en `127.0.0.1` y configurables en `.env` (ver [`.env.ex
 
 ## Pruebas
 
-Todas corren en contenedores y no necesitan el stack levantado, salvo la demo y los ejemplos HTTP.
+Todas corren en contenedores y no necesitan el stack levantado, salvo los ejemplos HTTP. La demo lo levanta si hace falta.
 
 ### Contrato
 
@@ -104,6 +104,25 @@ Si el stack no está corriendo, lo levanta y espera a que `api` esté sano. Crea
 2. Escrow B: crear → **rechazar** → `Rejected`
 3. Escrow C: crear → **cancelar** (dentro de las 2 h) → `CancelledBySender`
 4. Escrow D: crear → avanzar 7 días → la API lo informa como `ExpiredRecoverable` → **recuperar** → `Expired`
+
+```
+approve 1000 MOCK
+A  create 100 MOCK   #1   Pending             can cancel, confirm, reject
+   confirm           #1   Released            100 MOCK to the beneficiary
+B  create 200 MOCK   #2   Pending             can cancel, confirm, reject
+   reject            #2   Rejected            200 MOCK back to the sender
+C  create 300 MOCK   #3   Pending             can cancel, confirm, reject
+   cancel            #3   CancelledBySender   300 MOCK back to the sender
+D  create 400 MOCK   #4   Pending             can cancel, confirm, reject
+   advance 7 days    #4   ExpiredRecoverable  on-chain Pending, can recover
+   recoverExpired    #4   Expired             400 MOCK back to the sender
+
+Every state matched. The full views, from the host:
+  curl "http://localhost:3000/escrows?sender=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266&limit=4"
+```
+
+- **Verifica cada paso.** Espera a que la API refleje el paso y compara el estado, las acciones admitidas, los hashes de las transacciones y los saldos. Si algo no coincide, o la API no lo refleja en 30 s, termina con código 1. Por eso sirve como smoke test.
+- **Se puede repetir.** Cada corrida crea cuatro escrows nuevos y adelanta 7 días el reloj de Anvil.
 
 ### Ejemplos HTTP
 

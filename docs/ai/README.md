@@ -281,3 +281,23 @@ La IA armó y probó un borrador antes de preguntar, así las preguntas venían 
 - **Imágenes cacheables.** Antes, cambiar un test reconstruía las dos imágenes del stack, en 12,6 s. Las etapas ahora copian solo lo que usan, y en ese caso salen enteras de cache, en 2,8 s.
 - **Sin defaults duplicados.** Compose pasa vacías las variables de la API que no están en `.env`, y la API ya trata una variable vacía como ausente. Así, los defaults viven en un solo lugar.
 - **Verificación.** Desde una copia limpia del repo, con build sin cache, el stack queda sano en 34 s. También se probaron `up` repetido, `down` y `up` con datos, Anvil reiniciado solo, Postgres detenido, `Ctrl+C`, los overrides de `.env` y los tiempos de apagado. Los 79 tests de la API pasan con las imágenes nuevas.
+
+## 23. Fase 10: script de demo
+
+> sigamos con la fase 10
+
+**Output:** `api/scripts/demo.ts`, `npm run demo` y el servicio `demo` en `docker-compose.yml`. `docker compose run --rm demo` levanta el stack si hace falta, recorre los cuatro caminos y sale con código 0. El detalle está en el [ROADMAP](ROADMAP.md), fase 10, la salida en el [README](../../README.md#demo-de-punta-a-punta) y el diseño en [DESIGN](DESIGN.md#ejecución-y-tests).
+
+Antes de preguntar, la IA comprobó que `pull_policy: build` reconstruye la imagen en cada `docker compose run`. Hizo tres preguntas, y el autor eligió la opción recomendada en cada una:
+
+| Pregunta | Respuesta |
+| --- | --- |
+| De dónde toma el código el servicio `demo` | De la imagen `api:dev` con `pull_policy: build`: siempre el script actual, sin montar `./api` ni instalar nada en el host. Se descartaron montar `./api` y la imagen sin rebuild. |
+| Idioma de la salida | Inglés, como los logs, los errores de la API y Foundry. |
+| Cuánto muestra cada paso | Una línea con el estado, las acciones admitidas y adónde fueron los fondos, y al final un curl para ver el JSON completo. Se descartaron el JSON por paso y un modo detallado opcional. |
+
+- **Esperar y después verificar.** La demo no hace polling hasta que coincida todo, porque un bug recién se vería al vencer la espera. Espera a que la API refleje el paso (el escrow existe, tiene `resolvedTx` o su `now` alcanzó el bloque nuevo) y recién ahí compara la vista completa y los saldos. Si algo difiere, falla enseguida, con cada campo distinto.
+- **Sin mint.** El ROADMAP preveía mintear, pero el deploy ya fondea las cuentas de Anvil: alcanza con el approve.
+- **Confirmaciones, no previsto.** Con `CONFIRMATIONS` > 0 y el automine de Anvil, el indexador no vería nunca la última transacción. La demo mina esa cantidad de bloques después de cada una. Se comprobó que sin ese minado la demo se queda esperando.
+- **Comprobación con bugs.** Tres bugs introducidos a mano en la API (una resolución mal proyectada, la expiración sin derivar y `canRecover` sin chequear el vencimiento) y un indexador detenido hacen fallar la demo con código 1 y un mensaje que nombra el problema.
+- **Una trampa de compose.** La primera prueba con el indexador detenido pasó sin error: la variable que lo detenía estaba en el `up` pero no en el `run`, y `docker compose run` recreó la API con la configuración por defecto.

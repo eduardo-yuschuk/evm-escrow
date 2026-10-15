@@ -108,7 +108,12 @@ Los servicios de herramientas usan `profiles`, así que `docker compose up` no l
 - **Gas.** Cada `forge test` reescribe `contracts/snapshots/EscrowGasTest.json` con el gas de cada operación; los cambios aparecen en el diff. Ver [`docs/gas.md`](../gas.md).
 - **Dependencias.** La primera vez, o cuando cambia el lockfile, el entrypoint instala las dependencias desde el contenedor en `api/node_modules/` y `contracts/dependencies/`. Las dos carpetas están ignoradas por git.
 - **Permisos.** Los servicios `forge` y `npm` arrancan como root y el entrypoint baja, con `setpriv`, al dueño del código montado. Así los archivos generados quedan del usuario del host con Docker clásico, rootless o Docker Desktop, sin configurar nada.
-- **Demo.** El vencimiento se simula con `evm_increaseTime` y `evm_mine`: la API informa `ExpiredRecoverable` sin que nadie haya tocado el contrato. Cada escrow se crea justo antes de su acción, y el de vencimiento va al final, porque avanzar el tiempo del nodo afecta a todos los escrows a la vez.
+- **Demo** ([`api/scripts/demo.ts`](../../api/scripts/demo.ts)). Manda las transacciones con viem desde las cuentas 0 y 1 de Anvil, que el deploy ya fondeó, así que no necesita mintear.
+  - El vencimiento se simula con `evm_increaseTime` (el `ttl` del archivo de deploy) y `evm_mine`: la API informa `ExpiredRecoverable` mientras el contrato sigue diciendo `Pending`.
+  - Cada escrow se crea justo antes de su acción, y el de vencimiento va al final, porque avanzar el tiempo del nodo afecta a todos los escrows a la vez.
+  - **Smoke test.** Después de cada transacción espera a que la API la refleje: que exista el escrow, que tenga `resolvedTx` o que su `now` haya alcanzado el bloque nuevo. Recién ahí compara la vista completa, así un valor equivocado falla enseguida, con cada campo distinto, y no al vencer la espera de 30 s. También verifica que los fondos lleguen a quien corresponde. Cualquier diferencia termina con código 1.
+  - **Confirmaciones.** Con `CONFIRMATIONS` > 0, mina esa cantidad de bloques después de cada transacción. Si no, con el automine de Anvil el indexador no la vería nunca.
+  - **Código actual sin montar `./api`.** El servicio `demo` usa la imagen `api:dev` con `pull_policy: build`: compose la reconstruye en cada `run`, en 1,6 s si no cambió nada, y no instala nada en el host.
 
 ## Contrato
 

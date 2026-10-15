@@ -578,25 +578,47 @@ test/support/                      Anvil, un schema propio en Postgres y el orá
 
 **Hecho cuando:** un clon limpio levanta todo con un solo comando. ✅
 
-**Commits:** `build: cacheable stack images`, `build: anvil and deployer services`, `build: api service and healthchecks`, `docs: compose stack and progress`. El plan original tenía `build: api runtime image` y `postgres` entre los servicios nuevos, pero la imagen `runtime` existe desde la fase 0 y `postgres` llegó en la fase 8.
+**Commits:** `build: cacheable stack images`, `build: compose stack services, healthchecks and documentation`. El plan original tenía `build: api runtime image` y `postgres` entre los servicios nuevos, pero la imagen `runtime` existe desde la fase 0 y `postgres` llegó en la fase 8.
 
-## Fase 10: Script de demo
+## Fase 10: Script de demo ✅
 
-- [ ] **`api/scripts/demo.ts`** con viem y cuentas de Anvil:
-  - mint y approve
+`docker compose run --rm demo` levanta el stack si hace falta y recorre los cuatro caminos. Desde el stack bajado y sin volúmenes tarda 30 s; con el stack corriendo, 14 s. La salida está en el [README](../../README.md#demo-de-punta-a-punta).
+
+- [x] **`api/scripts/demo.ts`** con viem y las cuentas 0 (sender) y 1 (beneficiary) de Anvil, derivadas del mnemonic por defecto, como en el deploy:
+  - approve del total de los cuatro escrows. No hace falta mintear, porque el deploy ya le da 1.000.000 de tokens a cada cuenta.
   - escrow A: crear y confirmar
   - escrow B: crear y rechazar
   - escrow C: crear y cancelar
-  - escrow D: crear, `evm_increaseTime` 7 días, `evm_mine`, mostrar `ExpiredRecoverable` en la API, `recoverExpired` y mostrar `Expired`
-- [ ] **Después de cada paso,** esperar a que el indexador lo procese (polling a la API con timeout) e imprimir el estado.
-- [ ] **Servicio `demo`:**
-  - perfil `demo`, imagen `api:dev`
+  - escrow D: crear, `evm_increaseTime` por el `ttl` del archivo de deploy, `evm_mine`, mostrar `ExpiredRecoverable` en la API (con el contrato todavía en `Pending`), `recoverExpired` y mostrar `Expired`
+  - montos distintos (100, 200, 300 y 400 MOCK), para seguir los saldos
+  - se puede repetir: los ids salen del evento `EscrowCreated`, no se suponen
+- [x] **Después de cada paso,** espera a que la API lo refleje, con polling cada 200 ms y un tope de 30 s, y después verifica:
+  - la vista completa: estado efectivo y on-chain, las cuatro acciones, sender, beneficiary, token, monto y los hashes de creación y resolución. Si algo difiere, el error lista cada campo distinto.
+  - que los fondos lleguen a quien corresponde, por la diferencia de saldo del token
+  - imprime una línea por paso, en inglés, como el resto de la salida del proyecto. Las dos cosas son **decisión del autor**, igual que el código sin montar (ver abajo).
+- [x] **Confirmaciones.** No estaba previsto: con `CONFIRMATIONS` > 0, la demo mina esa cantidad de bloques después de cada transacción. Con el automine de Anvil no se minan bloques vacíos, así que si no lo hiciera, el indexador no vería nunca la última transacción.
+- [x] **Servicio `demo`:**
+  - perfil `demo`, imagen `api:dev`, con `npm run --silent demo`
+  - `pull_policy: build`: compose reconstruye la imagen en cada `run`, así corre el script actual sin montar `./api` ni instalar nada en el host. Con cache suma 1,6 s. Se descartaron montar `./api`, como el servicio `npm`, y la imagen sin rebuild, que corre código viejo sin avisar.
   - `depends_on: api (service_healthy)`, así `docker compose run --rm demo` levanta el stack si hace falta
-  - termina con código distinto de 0 si algún estado no es el esperado, para que sirva como smoke test en CI
+  - lee el volumen `deployments` y recibe `CONFIRMATIONS` y `API_PORT`, este último solo para imprimir el curl final
+  - termina con código 1 si algún estado no es el esperado, si la API no refleja un paso a tiempo o si falla el arranque. Así sirve como smoke test en CI.
 
-**Hecho cuando:** `docker compose run --rm demo` muestra los 4 estados finales y el estado derivado de vencimiento, y sale con código 0.
+**Verificación:**
+- **Desde cero:** con el stack bajado y sin volúmenes, `docker compose run --rm demo` levanta todo, recorre los cuatro caminos y sale con código 0.
+- **Repetida** con el stack corriendo: ids 5 a 8, código 0. El curl que imprime al final devuelve los cuatro escrows de la corrida con su estado final.
+- **Bugs introducidos a mano en la API**, uno por vez y con la imagen reconstruida en cada caso. La demo sale con código 1 y nombra el campo:
+  - `EscrowRejected` proyectado como `Released`: `reject of escrow #15: status is "Released", expected "Rejected"; onchainStatus is "Released", expected "Rejected"`
+  - sin `ExpiredRecoverable` derivado: `expiry of escrow #19: status is "Pending", expected "ExpiredRecoverable"`
+  - `canRecover` sin chequear el vencimiento: `create of escrow #20: canRecover is true, expected false`
+- **Indexador detenido**, con `POLL_INTERVAL_MS=600000`: `The API did not reflect the creation of escrow #13 within 30 s. Last answer: 404`, con código 1. El primer intento pasó sin error, porque `docker compose run` recreó la API con la configuración por defecto: la variable tiene que estar también en el `run`.
+- **`CONFIRMATIONS=2`:** pasa, con la API indexando 2 bloques detrás. Con la API en 2 y la demo en 0, se agota la espera: el minado extra es necesario.
+- **Errores de arranque:** un archivo de deploy inexistente y una URL inválida terminan con `Demo failed` y código 1, sin stack trace.
+- `npm run typecheck` y `npm run lint` pasan, y `scripts/` está incluido en los dos.
 
-**Commits:** `feat: end-to-end demo script`, `build: demo service`.
+**Hecho cuando:** `docker compose run --rm demo` muestra los 4 estados finales y el estado derivado de vencimiento, y sale con código 0. ✅
+
+**Commits:** `feat: end-to-end demo script`, `build: demo service`, `docs: demo and progress`.
 
 ## Fase 11: CI
 

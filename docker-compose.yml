@@ -97,6 +97,31 @@ services:
       postgres:
         condition: service_healthy
 
+  # End-to-end demo ("demo" profile): one escrow per path, checked against the API. Exits with 1
+  # if the API does not report what is expected. Usage: docker compose run --rm demo
+  demo:
+    profiles: [demo]
+    build:
+      context: ./api
+      target: dev
+    image: evm-escrow/api:dev
+    # Rebuilt on every run, so it runs the current script without mounting ./api.
+    pull_policy: build
+    command: [npm, run, --silent, demo]
+    environment:
+      RPC_URL: http://anvil:8545
+      API_URL: http://api:3000
+      DEPLOYMENTS_FILE: /deployments/31337.json
+      # The API waits for these confirmations: the demo mines the blocks.
+      CONFIRMATIONS: ${CONFIRMATIONS:-}
+      # Only printed, for curl from the host.
+      HOST_API_URL: http://localhost:${API_PORT:-3000}
+    volumes:
+      - deployments:/deployments:ro
+    depends_on:
+      api:
+        condition: service_healthy
+
   # Tools ("tools" profile): not started by `docker compose up`.
   # Usage: docker compose run --rm forge test | docker compose run --rm slither | docker compose run --rm npm run lint
 
