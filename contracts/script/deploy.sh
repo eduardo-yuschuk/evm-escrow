@@ -3,6 +3,8 @@
 # already describes the chain behind RPC_URL. `docker compose up` runs the service on every start, and
 # a second deployment on a running chain would leave the API indexing the first contract. A restarted
 # Anvil is a new chain, so it gets a new deployment.
+#
+# With ETHERSCAN_API_KEY set (Sepolia, docker-compose.sepolia.yml), forge also verifies the contracts.
 set -eu
 
 : "${RPC_URL:?}" "${PRIVATE_KEY:?}"
@@ -27,4 +29,6 @@ if [ -f "$file" ]; then
   fi
 fi
 
-exec forge script script/Deploy.s.sol --rpc-url "$RPC_URL" --broadcast --private-key "$PRIVATE_KEY"
+# forge reads the key itself from ETHERSCAN_API_KEY.
+exec forge script script/Deploy.s.sol --rpc-url "$RPC_URL" --broadcast --private-key "$PRIVATE_KEY" \
+  ${ETHERSCAN_API_KEY:+--verify}

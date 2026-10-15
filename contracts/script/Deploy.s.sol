@@ -16,8 +16,9 @@ import {MockERC20} from "../test/mocks/MockERC20.sol";
 ///      Optional environment variables:
 ///      - ESCROW_CANCEL_WINDOW: seconds, 2 hours by default
 ///      - ESCROW_TTL: seconds, 7 days by default
-///      - DEPLOY_MOCK_TOKEN: also deploy a MockERC20 and mint to the Anvil accounts; by default only
-///        on the Anvil chain id
+///      - DEPLOY_MOCK_TOKEN: also deploy a MockERC20, by default only on the Anvil chain id. On Anvil it
+///        mints to the Anvil accounts; elsewhere nobody gets tokens, and the demo mints its own (the
+///        mock's mint is open)
 contract Deploy is Script {
     uint256 internal constant ANVIL_CHAIN_ID = 31337;
     /// @dev Anvil's default mnemonic: its keys are public and only meant for local development.
@@ -36,7 +37,8 @@ contract Deploy is Script {
         uint256 startBlock = block.number;
         bytes32 startBlockHash = keccak256(vm.getRawBlockHeader(startBlock));
 
-        address[] memory holders = new address[](deployMockToken ? ANVIL_ACCOUNTS : 0);
+        bool fundAnvilAccounts = deployMockToken && block.chainid == ANVIL_CHAIN_ID;
+        address[] memory holders = new address[](fundAnvilAccounts ? ANVIL_ACCOUNTS : 0);
         for (uint32 i; i < holders.length; ++i) {
             holders[i] = vm.addr(vm.deriveKey(ANVIL_MNEMONIC, i));
         }

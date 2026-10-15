@@ -3,7 +3,9 @@ contracts/out/
 contracts/cache/
 contracts/broadcast/
 contracts/dependencies/
-contracts/deployments/
+contracts/deployments/*
+# The Sepolia deployment is public, and the API indexes it from this file (docker-compose.sepolia.yml).
+!contracts/deployments/11155111.json
 
 # Node
 api/node_modules/
@@ -12,5 +14,6 @@ api/coverage/
 
 # Local environment
 .env
+.env.sepolia
 CHALLENGE.md
 .vscode/
