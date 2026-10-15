@@ -228,6 +228,13 @@ docker run --rm --network host curlimages/curl:8.22.0 -s http://localhost:3000/h
 
 El mismo contrato está deployado en Sepolia con ventanas cortas, 5 minutos para cancelar y 10 de TTL, para ver un vencimiento en vivo: en una testnet no se puede adelantar el reloj. Todo está en [`docker-compose.sepolia.yml`](docker-compose.sepolia.yml), un proyecto aparte del stack local, con su propia base y la API en el puerto 3001. El diseño está en [DESIGN](docs/ai/DESIGN.md#sepolia).
 
+| Contrato | Dirección, verificada en Etherscan |
+| --- | --- |
+| `Escrow` (ventanas de 300 y 600 s) | [`0x9a3b2D1C29c049F65875b6DfA0Cf869485625055`](https://sepolia.etherscan.io/address/0x9a3b2d1c29c049f65875b6dfa0cf869485625055#code) |
+| Token de prueba `MOCK`, con mint abierto | [`0xbCb0FcD74C568Be777E86734db21d35EeB2C826e`](https://sepolia.etherscan.io/address/0xbcb0fcd74c568be777e86734db21d35eeb2c826e#code) |
+
+El archivo de deploy es [`contracts/deployments/11155111.json`](contracts/deployments/11155111.json).
+
 **Indexar el contrato deployado** no necesita claves ni cuentas: usa el archivo de deploy versionado y un RPC público.
 
 ```bash
