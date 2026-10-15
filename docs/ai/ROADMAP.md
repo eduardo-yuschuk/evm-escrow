@@ -680,11 +680,37 @@ Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose
 
 ## Fase 12: Cierre y entrega
 
-- [ ] **Verificación en un host solo con Docker,** por ejemplo una VM limpia o un contenedor `docker:dind`:
-  - `git clone`
-  - `docker compose up --build`
-  - `docker compose run --rm demo`
-  - todos los comandos de la sección *Pruebas* del README
+- [x] **Verificación en un host solo con Docker:** Debian 13 en WSL recién instalado, con Docker 29.9.1 rootless y Compose v5.6.0. Sin Node, npm, Foundry, solc ni `jq`; Python 3 viene con Debian y no se usa. Docker arrancó sin imágenes, volúmenes ni contenedores.
+  - `git clone` desde GitHub, en `fcce2ab`
+  - `docker compose up --build`: el stack queda sano en 51 s, incluidas la descarga de las imágenes base y el build. Las únicas advertencias son de la inicialización de Postgres (locales y `trust` local), propias de la imagen.
+  - los cuatro curl del README devuelven lo documentado, también con la imagen `curlimages/curl`, que con Docker rootless funciona igual
+  - `docker compose run --rm demo` con el stack corriendo: los cuatro caminos y código 0, en 19 s con el build de `api:dev`. El curl que imprime al final devuelve los cuatro escrows con su estado final.
+  - `Ctrl+C` en `up` detiene todo en 0,6 s, cada contenedor con código 0
+  - los 13 comandos de la sección *Pruebas*, en el orden del README y con las imágenes de herramientas sin construir, salen con código 0:
+
+    | Comando | Tiempo | Resultado |
+    | --- | --- | --- |
+    | `forge test -vvv`, con el build de `contracts:deps` | 15 s | 79 tests |
+    | `forge test` con el perfil `ci` | 49 s | 79 tests |
+    | `forge snapshot --check` | 8 s | sin cambios |
+    | gas report | 0,6 s | |
+    | `forge coverage` | 17 s | 100 % en `Escrow.sol` |
+    | `forge fmt --check` | 0,5 s | |
+    | `slither`, con el build de su imagen | 24 s | 0 hallazgos |
+    | `npm test` | 15 s | 79 tests |
+    | `npm run lint` y `typecheck` | 6 y 4 s | |
+    | `forge build`, `npm run abi` y `git diff --exit-code api/src/generated` | 2 s | sin diff |
+
+  - todos los archivos generados en el clon (`out/`, `cache/`, `dependencies/`, `node_modules/`) quedan del usuario del host, y `docker compose down -v` no deja contenedores ni volúmenes
+- [x] **`forge coverage` ensucia el árbol.** Hallazgo de la verificación: coverage compila sin optimizador y reescribe `contracts/snapshots/EscrowGasTest.json` con esos valores, entre 1.537 y 4.062 de gas más por operación. El siguiente `forge test` lo restaura, pero en el orden del README coverage va después de los chequeos de gas, así que el clon termina con un archivo versionado modificado. CI no corre coverage, por eso no apareció antes.
+  - **Corrección:** `EscrowGasTest` escribe el snapshot con un helper, `_snapshotGas`, que no hace nada si `vm.isContext(VmSafe.ForgeContext.Coverage)`.
+  - **El gas medido no cambia:** la consulta va antes de `snapshotGasLastFrame` pero no cuenta como último frame, y `EscrowGasTest.json` sale idéntico.
+  - **`.gas-snapshot` sí cambia:** mide cada función de test completa, así que los 7 tests del benchmark suben entre 713 y 724. Se regeneró; el resto de los tests no se movió.
+  - **Verificación:** con un valor del JSON alterado a mano, `forge coverage` lo deja como está y `forge test` lo restaura. `forge snapshot --check`, `FORGE_SNAPSHOT_CHECK=true`, `fmt --check`, el perfil `ci` y Slither pasan, y coverage sigue en 100 % en `Escrow.sol`.
+- [ ] **Detalles para el README final**, de la misma verificación:
+  - la salida de la demo empieza con 5 líneas de encabezado (API, cadena, contratos y cuentas) que el README no muestra
+  - el cuarto curl (`ExpiredRecoverable`) da una lista vacía después de la demo, porque la demo recupera el escrow D
+  - `curlimages/curl` va sin versión fijada, a diferencia del resto de las imágenes
 - [ ] **Revisión de seguridad del contrato contra el checklist:**
   - reentrancy y CEI
   - control de acceso por acción

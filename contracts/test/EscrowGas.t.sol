@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.37;
 
+import {VmSafe} from "forge-std/Vm.sol";
+
 import {Escrow} from "../src/Escrow.sol";
 import {EscrowTestBase} from "./utils/EscrowTestBase.sol";
 
 /// @dev Gas benchmark: one scenario per test, each ending in the call it measures. The gas of that call
 ///      is written to `snapshots/EscrowGasTest.json` on every `forge test` run, so any change shows up
 ///      in the diff. The values match `gasUsed` of the same transactions sent to Anvil (see docs/gas.md).
+///      `forge coverage` runs these tests too but does not write the snapshot (see `_snapshotGas`).
 ///
 ///      Steady state: the escrow already holds other escrows of the token, and the recipient of each
 ///      payout already holds the token, so no balance goes from or to zero.
@@ -27,22 +30,22 @@ contract EscrowGasTest is EscrowTestBase {
 
         vm.prank(sender);
         fresh.createEscrow(address(token), beneficiary, AMOUNT);
-        vm.snapshotGasLastFrame("createEscrow (first escrow of the contract)");
+        _snapshotGas("createEscrow (first escrow of the contract)");
     }
 
     function test_Gas_CreateEscrow() public {
         _create();
-        vm.snapshotGasLastFrame("createEscrow");
+        _snapshotGas("createEscrow");
     }
 
     function test_Gas_Cancel() public {
         _act(Action.Cancel, 1);
-        vm.snapshotGasLastFrame("cancel");
+        _snapshotGas("cancel");
     }
 
     function test_Gas_Confirm() public {
         _act(Action.Confirm, 1);
-        vm.snapshotGasLastFrame("confirm");
+        _snapshotGas("confirm");
     }
 
     function test_Gas_Confirm_BeneficiaryWithoutBalance() public {
@@ -52,17 +55,24 @@ contract EscrowGasTest is EscrowTestBase {
 
         vm.prank(newBeneficiary);
         escrow.confirm(id);
-        vm.snapshotGasLastFrame("confirm (beneficiary without balance)");
+        _snapshotGas("confirm (beneficiary without balance)");
     }
 
     function test_Gas_Reject() public {
         _act(Action.Reject, 1);
-        vm.snapshotGasLastFrame("reject");
+        _snapshotGas("reject");
     }
 
     function test_Gas_RecoverExpired() public {
         vm.warp(block.timestamp + TTL);
         _act(Action.RecoverExpired, 1);
-        vm.snapshotGasLastFrame("recoverExpired");
+        _snapshotGas("recoverExpired");
+    }
+
+    /// @dev `forge coverage` builds without the optimizer, so its gas would overwrite the snapshot with
+    ///      values that no deployment pays.
+    function _snapshotGas(string memory name) internal {
+        if (vm.isContext(VmSafe.ForgeContext.Coverage)) return;
+        vm.snapshotGasLastFrame(name);
     }
 }

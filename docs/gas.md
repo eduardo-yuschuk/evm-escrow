@@ -6,7 +6,7 @@ Todo lo que sigue está medido con solc 0.8.37, `evm_version = "cancun"` y optim
 
 | Artefacto | Qué contiene | Cómo se regenera |
 | --- | --- | --- |
-| [`contracts/snapshots/EscrowGasTest.json`](../contracts/snapshots/EscrowGasTest.json) | Gas de cada operación, por escenario | Se reescribe en cada `docker compose run --rm forge test` |
+| [`contracts/snapshots/EscrowGasTest.json`](../contracts/snapshots/EscrowGasTest.json) | Gas de cada operación, por escenario | Se reescribe en cada `docker compose run --rm forge test`, pero no con `forge coverage` |
 | [`contracts/.gas-snapshot`](../contracts/.gas-snapshot) | Gas total de cada test, para detectar regresiones | `docker compose run --rm forge snapshot` |
 
 Para verificar que nada cambió (lo que corre CI, en [`contracts.yml`](../.github/workflows/contracts.yml)):
@@ -19,6 +19,7 @@ docker compose run --rm -e FORGE_SNAPSHOT_CHECK=true forge test --match-contract
 Los dos fallan con una diferencia de una sola unidad de gas.
 
 - **Benchmark** ([`EscrowGasTest`](../contracts/test/EscrowGas.t.sol)): cada test arma un escenario y termina en la llamada que mide, con `vm.snapshotGasLastFrame`.
+- **Coverage no lo reescribe.** `forge coverage` compila sin optimizador y escribiría valores entre 1.537 y 4.062 de gas más altos, que ningún deploy paga. El benchmark consulta `vm.isContext(Coverage)` antes de escribir. Esa consulta no cambia el gas medido, porque no es el último frame, pero suma unos 715 al total de cada test en `.gas-snapshot`.
 - **Los números son de transacción completa,** incluidos los 21.000 de gas intrínseco, el calldata y el acceso en frío a cuentas y slots.
 - **Se verificaron contra una cadena real:** las mismas transacciones enviadas a Anvil dan exactamente el mismo `gasUsed` en el recibo.
 - **Determinismo:** `forge snapshot` usa una semilla fija para el fuzz, así que `.gas-snapshot` sale idéntico en cada corrida, incluidas las entradas de fuzz e invariantes. Se comprobó corriéndolo dos veces y comparando.

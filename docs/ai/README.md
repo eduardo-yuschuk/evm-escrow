@@ -340,3 +340,24 @@ Antes de preguntar, la IA corrió todos los pasos de los workflows sobre una cop
 **Output:** [`avances/dia2.md`](avances/dia2.md), con el mismo formato que el del día 1: las fases 6 a 11 terminadas, la reorganización de la documentación, las decisiones del autor de cada fase, lo que falta (fase 12 y los pendientes decididos) y el estado del repo.
 
 - **Enunciado fuera del repo.** Al revisar el estado apareció que `CHALLENGE.md` está en el `.gitignore` desde `1f7449f` y no existe en la copia local, pero el README, DESIGN, el ROADMAP y este log lo enlazan. Quedó anotado como decisión del autor para el cierre, junto con la del PDF.
+
+## 27. Fase 12: verificación en un host solo con Docker
+
+> vamos con los puntos de cierre y entrega, pero por partes. para la Verificación en un host solo con Docker ahora estamos en Debian (WSL) recién instalado con algunos comandos básicos y docker rootless. hagamos esa primera verificación nomás ("Verificación en un host solo con Docker")
+
+**Output:** la verificación completa, registrada en la fase 12 del [ROADMAP](ROADMAP.md). La IA comprobó primero que el host no tuviera Node, Foundry ni solc, y que Docker no tuviera imágenes, volúmenes ni contenedores. Después clonó el repo desde GitHub y corrió los comandos del README tal cual, en su orden.
+
+- **Stack:** `docker compose up --build` queda sano en 51 s desde cero. Los curl, la demo y el `Ctrl+C` se comportan como dice el README.
+- **Pruebas:** los 13 comandos de la sección *Pruebas* salen con código 0, y los archivos generados quedan del usuario del host.
+- **Hallazgo:** `forge coverage` compila sin optimizador y reescribe `contracts/snapshots/EscrowGasTest.json` con esos valores. Corriendo el README en orden, el clon termina con un archivo versionado modificado. Se confirmó aislando el paso: coverage lo cambia y el siguiente `forge test` lo restaura. CI no corre coverage, por eso no había aparecido. Quedó abierto en la fase 12, sin corregir.
+- **Detalles para el README final:** el encabezado de la demo que no se muestra, el cuarto curl que da vacío después de la demo y la imagen de curl sin versión fijada.
+
+## 28. Coverage sin reescribir el snapshot de gas
+
+> si, de acuerdo, que EscrowGasTest no escriba el snapshot cuando corre el coverage
+
+**Output:** `EscrowGasTest` escribe el snapshot con un helper, `_snapshotGas`, que no hace nada bajo `forge coverage` (`vm.isContext(VmSafe.ForgeContext.Coverage)`). Se actualizaron [`docs/gas.md`](../gas.md), [DESIGN](DESIGN.md) y la fase 12 del [ROADMAP](ROADMAP.md).
+
+- **Riesgo revisado:** si la consulta de contexto contara como último frame, el benchmark mediría esa consulta y no la operación. `EscrowGasTest.json` sale idéntico, así que no cuenta.
+- **Prueba de que sigue escribiendo:** con un valor del JSON alterado a mano, coverage lo deja como está y `forge test` lo restaura.
+- **`.gas-snapshot` regenerado:** mide cada función de test completa, y los 7 tests del benchmark suben entre 713 y 724 por la consulta. El gas del contrato no cambió.
