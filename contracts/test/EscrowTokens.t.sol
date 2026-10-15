@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.37;
 
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 
 import {IEscrow} from "../src/IEscrow.sol";
 import {BlacklistERC20} from "./mocks/BlacklistERC20.sol";
 import {FalseReturnERC20} from "./mocks/FalseReturnERC20.sol";
+import {FeeOnTopERC20} from "./mocks/FeeOnTopERC20.sol";
 import {FeeOnTransferERC20} from "./mocks/FeeOnTransferERC20.sol";
 import {NoReturnERC20} from "./mocks/NoReturnERC20.sol";
 import {ReentrantERC20} from "./mocks/ReentrantERC20.sol";
@@ -175,5 +177,71 @@ contract EscrowTokensTest is EscrowTestBase {
         _act(Action.Reject, id);
         _assertStatus(id, IEscrow.Status.Rejected);
         assertEq(usdc.balanceOf(sender), INITIAL_BALANCE);
+    }
+
+    /// @dev If the token blocks the escrow contract itself, every escrow of that token is frozen, in
+    ///      every direction, and no new one can be created. Escrows of other tokens are unaffected.
+    function test_KnownLimitation_BlacklistedEscrowFreezesItsTokenEscrows() public {
+        BlacklistERC20 usdc = new BlacklistERC20();
+        _fund(address(usdc), sender);
+        uint256 id = _create(address(usdc), AMOUNT);
+        uint256 other = _create();
+        usdc.setBlocked(address(escrow), true);
+        bytes memory blocked = abi.encodeWithSelector(BlacklistERC20.Blocked.selector, address(escrow));
+
+        Action[3] memory beforeExpiry = [Action.Cancel, Action.Confirm, Action.Reject];
+        for (uint256 a; a < beforeExpiry.length; ++a) {
+            vm.expectRevert(blocked);
+            _act(beforeExpiry[a], id);
+        }
+        vm.expectRevert(blocked);
+        _create(address(usdc), AMOUNT);
+
+        vm.warp(_expiresAt(id));
+        vm.expectRevert(blocked);
+        _act(Action.RecoverExpired, id);
+        _assertStatus(id, IEscrow.Status.Pending);
+
+        // The escrow of the standard token is not affected.
+        _act(Action.RecoverExpired, other);
+        _assertStatus(other, IEscrow.Status.Expired);
+
+        // Once the token unblocks the escrow, the funds can be recovered.
+        usdc.setBlocked(address(escrow), false);
+        _act(Action.RecoverExpired, id);
+        assertEq(usdc.balanceOf(sender), INITIAL_BALANCE);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Known limitation: tokens that take more from the payer than the amount transferred
+    // ---------------------------------------------------------------------------------------------
+
+    /// @dev Documents the accepted limitation: the escrow measures what it receives, but each payout
+    ///      assumes that sending `amount` takes exactly `amount` out of the escrow. A token that charges
+    ///      its fee to the payer, on top of the amount, takes more, and the last escrows of that token
+    ///      are left short. Only that token's escrows are affected. See docs/seguridad.md.
+    function test_KnownLimitation_FeeOnTopTokenUnderfundsLaterEscrows() public {
+        FeeOnTopERC20 feeToken = new FeeOnTopERC20(100); // 1%
+        address otherSender = makeAddr("otherSender");
+        _fund(address(feeToken), sender);
+        _fund(address(feeToken), otherSender);
+
+        // Deposits are recorded correctly: the senders pay the fee.
+        uint256 first = _create(address(feeToken), AMOUNT);
+        vm.prank(otherSender);
+        uint256 second = escrow.createEscrow(address(feeToken), beneficiary, AMOUNT);
+        assertEq(escrow.getEscrow(first).amount, AMOUNT);
+        assertEq(escrow.getEscrow(second).amount, AMOUNT);
+        assertEq(feeToken.balanceOf(address(escrow)), 2 * AMOUNT);
+
+        // The first payout takes the amount plus 1% from the escrow, so the second one is short.
+        _act(Action.Confirm, first);
+        uint256 left = AMOUNT - AMOUNT / 100;
+        assertEq(feeToken.balanceOf(address(escrow)), left);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, address(escrow), left, AMOUNT)
+        );
+        _act(Action.Confirm, second);
     }
 }
