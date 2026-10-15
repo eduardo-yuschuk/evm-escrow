@@ -463,3 +463,29 @@ Antes de empezar, la IA hizo cuatro preguntas, porque cambiaban el alcance y el 
   - en Anvil, el límite pasa a ser 1,3 veces la estimación del nodo
   - el stack local y la demo siguen en verde
 - **Documentación:** se agregó a [DESIGN](DESIGN.md#sepolia) y a [`docs/gas.md`](../gas.md) que los números de gas son de Cancun y cuánto cuesta el deploy en Sepolia.
+
+## 32. Sepolia: deploy y verificación
+
+> (salida del segundo `docker compose -f docker-compose.sepolia.yml run --rm deploy`: las dos creaciones en `[Success]` y los dos contratos verificados)
+
+**Output:** con el gas estimado por el nodo, el deploy pasó.
+- **Direcciones:** `Escrow` en `0x9a3b2D1C29c049F65875b6DfA0Cf869485625055` y el token de prueba en `0xbCb0FcD74C568Be777E86734db21d35EeB2C826e`, los dos verificados en Etherscan y Sourcify. Costaron 0,0053 ETH.
+- **Comprobado en la cadena:** el código, las ventanas de 300 y 600 s, y que el `startBlockHash` del archivo es el hash real del bloque inicial.
+- **La API contra Sepolia:** la IA la levantó sin claves y quedó sana, con lag 12.
+- **README:** suma las dos direcciones con su link a Etherscan. El archivo `contracts/deployments/11155111.json` quedó versionado, con este deploy, en `32fda84`.
+- **Lo que falta:** la demo, que corre el autor con sus claves.
+
+## 33. Sepolia: la demo rechaza las claves sin `0x`
+
+> 'docker compose -f docker-compose.sepolia.yml run --rm demo' va a usar .env.sepolia?
+
+> (salida de `docker compose -f docker-compose.sepolia.yml run --rm demo`: `Demo failed: Invalid configuration`, `expected a 0x-prefixed 32-byte hex key` en las dos claves)
+
+**Output:**
+- **La pregunta:** sí. Solo `deploy` y `demo` cargan `.env.sepolia`, y solo dentro del contenedor: compose no lo usa para los `${...}` del YAML, que van en `.env`.
+- **El fallo:** la demo exigía las claves con `0x`, y las billeteras suelen exportarlas sin el prefijo. El deploy había pasado con la misma clave porque forge acepta las dos formas. La IA no leyó `.env.sepolia`: lo dedujo de esa diferencia.
+- **Corrección:** la demo acepta las claves con `0x` o sin él, y también con espacios alrededor, igual que forge. El mensaje de error no muestra el valor. `.env.sepolia.example` aclara que el `0x` es opcional.
+- **Verificada en el stack local:**
+  - la demo pasa con las claves de Anvil sin `0x`, una de ellas con espacios
+  - con claves mal formadas, falla con el mensaje nuevo
+  - lint y typecheck en verde

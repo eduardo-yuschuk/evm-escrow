@@ -35,10 +35,12 @@ import { loadDeployment, type Deployment } from "../src/deployment.js";
 import { escrowAbi, mockErc20Abi } from "../src/generated/contracts.js";
 import type { EscrowView } from "../src/http/view.js";
 
+/** With or without 0x, as forge takes it: wallets usually export keys without the prefix. */
 const privateKey = z
   .string()
-  .regex(/^0x[0-9a-fA-F]{64}$/, "expected a 0x-prefixed 32-byte hex key")
-  .transform((key) => key as Hex);
+  .trim()
+  .regex(/^(0x)?[0-9a-fA-F]{64}$/, "expected a 32-byte hex key (64 hex digits, 0x optional)")
+  .transform((key) => (key.startsWith("0x") ? key : `0x${key}`) as Hex);
 
 const envSchema = z.object({
   RPC_URL: z.url(),
