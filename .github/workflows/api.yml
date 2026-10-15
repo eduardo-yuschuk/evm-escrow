@@ -1,0 +1,46 @@
+# API and indexer checks, with the same docker compose commands as the README: nothing is installed
+# on the runner but what it already has, Docker and Compose.
+name: api
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Every commit on main keeps its result; a pull request only needs the latest one.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build images
+        run: |
+          docker compose version
+          docker compose build npm forge
+
+      - name: Lint
+        run: docker compose run --rm npm run lint
+
+      - name: Typecheck
+        run: docker compose run --rm npm run typecheck
+
+      - name: Tests, against Anvil and Postgres
+        run: docker compose run --rm npm test
+
+      # api/src/generated is committed: it must match the contracts it was generated from.
+      - name: Generated ABI is up to date
+        run: |
+          docker compose run --rm forge build
+          docker compose run --rm npm run abi
+          git diff --exit-code api/src/generated

@@ -114,6 +114,11 @@ Los servicios de herramientas usan `profiles`, así que `docker compose up` no l
   - **Smoke test.** Después de cada transacción espera a que la API la refleje: que exista el escrow, que tenga `resolvedTx` o que su `now` haya alcanzado el bloque nuevo. Recién ahí compara la vista completa, así un valor equivocado falla enseguida, con cada campo distinto, y no al vencer la espera de 30 s. También verifica que los fondos lleguen a quien corresponde. Cualquier diferencia termina con código 1.
   - **Confirmaciones.** Con `CONFIRMATIONS` > 0, mina esa cantidad de bloques después de cada transacción. Si no, con el automine de Anvil el indexador no la vería nunca.
   - **Código actual sin montar `./api`.** El servicio `demo` usa la imagen `api:dev` con `pull_policy: build`: compose la reconstruye en cada `run`, en 1,6 s si no cambió nada, y no instala nada en el host.
+- **CI** ([`.github/workflows/`](../../.github/workflows/)). Hay tres workflows: `contracts`, `api` y `e2e`. Corren los comandos del README en un runner `ubuntu-24.04` y no instalan nada, porque el runner ya trae Docker y Compose.
+  - **Cuándo.** En cada push a `main` y en cada pull request, sin filtros de paths: un cambio en `docker-compose.yml` o en un Dockerfile siempre se prueba. En un pull request, un push nuevo cancela la corrida anterior; en `main`, cada commit conserva su resultado.
+  - **Sin cache de capas.** Cada corrida construye las imágenes de cero, como en una máquina limpia. Las tres imágenes de herramientas tardan 30 s sin cache en la máquina de desarrollo.
+  - **Seguridad.** `permissions: contents: read`, `actions/checkout` fijada por SHA (es la única acción) y `persist-credentials: false`, para no dejar el token en `.git/config` mientras corren dependencias de terceros.
+  - **Diagnóstico.** Cada job imprime la versión de Compose. Si `e2e` falla, imprime los logs de todo el stack, Anvil incluido.
 
 ## Contrato
 
@@ -476,7 +481,7 @@ Se validan con zod al arrancar. Una variable vacía toma el default y un valor i
 | --- | --- |
 | **Fuzz + invariantes** | Ataca directo el 30 % de seguridad. Un handler de Foundry ejecuta secuencias aleatorias de create, cancel, confirm, reject, recover y `warp`, con varios tokens incluidos uno fee-on-transfer. Invariantes: `balanceOf(token) >= Σ pendientes`, contabilidad exacta con donaciones, un estado final nunca cambia, lo pagado nunca supera lo depositado e ids consistentes con `escrowCount`. Además, cada llamada se compara con un modelo de referencia. |
 | **Fee-on-transfer** | Es necesario para que "cualquier ERC-20" sea seguro (ver decisión 7). |
-| **Slither + CI** | Slither corre en CI y sus hallazgos se comentan en [`docs/slither.md`](../slither.md), incluido lo que Slither no puede ver (reentrada a través del assembly de `SafeERC20`). GitHub Actions corre exactamente los mismos `docker compose run …` documentados en el [README](../../README.md#pruebas): fmt, tests, snapshot, Slither, lint, typecheck y tests de la API, más un smoke test con el demo. Si pasa en CI, pasa en cualquier máquina con Docker. |
+| **Slither + CI** | Slither corre en CI y sus hallazgos se comentan en [`docs/slither.md`](../slither.md), incluido lo que Slither no puede ver (reentrada a través del assembly de `SafeERC20`). GitHub Actions corre exactamente los mismos `docker compose run …` documentados en el [README](../../README.md#pruebas): fmt, tests, snapshots de gas, Slither, lint, typecheck, tests de la API y el ABI generado al día, más un smoke test con la demo. Si pasa en CI, pasa en cualquier máquina con Docker. |
 | **Gas report + storage** | Gas por operación medido y verificado contra recibos de Anvil, `.gas-snapshot` para regresiones y 7 variantes de optimización medidas con su veredicto, en [`docs/gas.md`](../gas.md). El layout de 4 slots y los deadlines derivados están justificados en [Storage](#storage). |
 
 Se descartaron:

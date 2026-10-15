@@ -1,0 +1,45 @@
+# Contract checks, with the same docker compose commands as the README: nothing is installed on the
+# runner but what it already has, Docker and Compose.
+name: contracts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Every commit on main keeps its result; a pull request only needs the latest one.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build images
+        run: |
+          docker compose version
+          docker compose build forge slither
+
+      - name: Format
+        run: docker compose run --rm forge fmt --check
+
+      - name: Tests, with the ci profile's fuzz and invariant runs
+        run: docker compose run --rm -e FOUNDRY_PROFILE=ci forge test
+
+      - name: Gas snapshot of every test
+        run: docker compose run --rm forge snapshot --check
+
+      - name: Gas per operation
+        run: docker compose run --rm -e FORGE_SNAPSHOT_CHECK=true forge test --match-contract EscrowGasTest
+
+      - name: Slither
+        run: docker compose run --rm slither

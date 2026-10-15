@@ -1,12 +1,16 @@
 # evm-escrow
 
+[![contracts](https://github.com/eduardo-yuschuk/evm-escrow/actions/workflows/contracts.yml/badge.svg?branch=main)](https://github.com/eduardo-yuschuk/evm-escrow/actions/workflows/contracts.yml)
+[![api](https://github.com/eduardo-yuschuk/evm-escrow/actions/workflows/api.yml/badge.svg?branch=main)](https://github.com/eduardo-yuschuk/evm-escrow/actions/workflows/api.yml)
+[![e2e](https://github.com/eduardo-yuschuk/evm-escrow/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/eduardo-yuschuk/evm-escrow/actions/workflows/e2e.yml)
+
 Escrow de tokens ERC-20 en Solidity, más una API/indexador en TypeScript que proyecta los eventos del contrato en Postgres.
 
 - **Contrato** (`contracts/`): un solo contrato gestiona muchos escrows. El enviador deposita tokens y el beneficiario los confirma o rechaza; el enviador puede cancelar en las primeras 2 horas y recuperar los fondos después de 7 días. Foundry, Solidity 0.8.37 y OpenZeppelin.
 - **API e indexador** (`api/`): Node.js, TypeScript y viem. Indexa los eventos en Postgres y expone el estado de cada escrow por HTTP.
 - **Todo corre con Docker Compose:** nodo local (Anvil), deploy, base de datos, API, tests, análisis estático y demo.
 
-> **Estado:** el contrato, el indexador, la API HTTP, el stack completo (`docker compose up`) y la demo están terminados y testeados. CI está en desarrollo.
+> **Estado:** el contrato, el indexador, la API HTTP, el stack completo (`docker compose up`), la demo y CI están terminados y testeados. Falta el cierre de la entrega.
 
 ## Documentación
 
@@ -55,6 +59,14 @@ Puertos, publicados solo en `127.0.0.1` y configurables en `.env` (ver [`.env.ex
 ## Pruebas
 
 Todas corren en contenedores y no necesitan el stack levantado, salvo los ejemplos HTTP. La demo lo levanta si hace falta.
+
+CI corre estos mismos comandos en GitHub Actions, en cada push a `main` y en cada pull request:
+
+| Workflow | Qué corre |
+| --- | --- |
+| [`contracts`](.github/workflows/contracts.yml) | Formato, tests con el perfil `ci`, los dos chequeos de gas y Slither |
+| [`api`](.github/workflows/api.yml) | Lint, typecheck, tests de la API y que el ABI generado esté al día |
+| [`e2e`](.github/workflows/e2e.yml) | El stack completo y la demo contra él |
 
 ### Contrato
 

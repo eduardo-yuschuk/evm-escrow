@@ -9,12 +9,14 @@ Todo lo que sigue está medido con solc 0.8.37, `evm_version = "cancun"` y optim
 | [`contracts/snapshots/EscrowGasTest.json`](../contracts/snapshots/EscrowGasTest.json) | Gas de cada operación, por escenario | Se reescribe en cada `docker compose run --rm forge test` |
 | [`contracts/.gas-snapshot`](../contracts/.gas-snapshot) | Gas total de cada test, para detectar regresiones | `docker compose run --rm forge snapshot` |
 
-Para verificar que nada cambió (lo que va a correr CI):
+Para verificar que nada cambió (lo que corre CI, en [`contracts.yml`](../.github/workflows/contracts.yml)):
 
 ```bash
 docker compose run --rm forge snapshot --check
-docker compose run --rm -e FORGE_SNAPSHOT_CHECK=true forge test
+docker compose run --rm -e FORGE_SNAPSHOT_CHECK=true forge test --match-contract EscrowGasTest
 ```
+
+Los dos fallan con una diferencia de una sola unidad de gas.
 
 - **Benchmark** ([`EscrowGasTest`](../contracts/test/EscrowGas.t.sol)): cada test arma un escenario y termina en la llamada que mide, con `vm.snapshotGasLastFrame`.
 - **Los números son de transacción completa,** incluidos los 21.000 de gas intrínseco, el calldata y el acceso en frío a cuentas y slots.

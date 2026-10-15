@@ -301,3 +301,23 @@ Antes de preguntar, la IA comprobó que `pull_policy: build` reconstruye la imag
 - **Confirmaciones, no previsto.** Con `CONFIRMATIONS` > 0 y el automine de Anvil, el indexador no vería nunca la última transacción. La demo mina esa cantidad de bloques después de cada una. Se comprobó que sin ese minado la demo se queda esperando.
 - **Comprobación con bugs.** Tres bugs introducidos a mano en la API (una resolución mal proyectada, la expiración sin derivar y `canRecover` sin chequear el vencimiento) y un indexador detenido hacen fallar la demo con código 1 y un mensaje que nombra el problema.
 - **Una trampa de compose.** La primera prueba con el indexador detenido pasó sin error: la variable que lo detenía estaba en el `up` pero no en el `run`, y `docker compose run` recreó la API con la configuración por defecto.
+
+## 24. Fase 11: CI
+
+> sigamos con la fase 11
+
+**Output:** `.github/workflows/contracts.yml`, `api.yml` y `e2e.yml`, con los mismos `docker compose` del README, más los badges en el README. El detalle está en el [ROADMAP](ROADMAP.md), fase 11, y el diseño en [DESIGN](DESIGN.md#ejecución-y-tests).
+
+Antes de preguntar, la IA corrió todos los pasos de los workflows sobre una copia limpia del repo, con las imágenes construidas sin cache, para tener los tiempos. Hizo tres preguntas, y el autor eligió la opción recomendada en cada una:
+
+| Pregunta | Respuesta |
+| --- | --- |
+| Cache de capas de Docker en CI | Sin cache: las tres imágenes de herramientas se construyen en 30 s, y el build queda igual al de una máquina limpia. Se descartó el cache `type=gha` con `docker buildx bake`. |
+| Cuándo corren los workflows | En cada push a `main` y en cada pull request, sin filtros de paths. Se descartaron ignorar los cambios solo de documentación y filtrar por carpeta. |
+| Badges en el README | Sí, los tres, bajo el título. |
+
+- **Versiones fijadas también en CI.** La única acción, `actions/checkout`, va fijada por SHA en la v7.0.1, publicada hace casi tres meses, con el mismo criterio de antigüedad que el resto de las dependencias. El runner es `ubuntu-24.04`, no `ubuntu-latest`.
+- **Permisos mínimos.** `contents: read` y `persist-credentials: false`, para no dejar el token en `.git/config` mientras corren dependencias de terceros.
+- **Los chequeos de gas se probaron en falso.** Con una sola unidad de gas cambiada en cada snapshot, los dos comandos salen con código 1. El paso más lento es `forge test` con el perfil `ci`: 64 s.
+- **El commit de la fase 10.** Se agrupó en un solo commit, y se corrigió la línea *Commits* de esa fase en el ROADMAP.
+- **Pendiente:** ver los workflows en verde en GitHub después del push.

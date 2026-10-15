@@ -618,29 +618,53 @@ test/support/                      Anvil, un schema propio en Postgres y el orá
 
 **Hecho cuando:** `docker compose run --rm demo` muestra los 4 estados finales y el estado derivado de vencimiento, y sale con código 0. ✅
 
-**Commits:** `feat: end-to-end demo script`, `build: demo service`, `docs: demo and progress`.
+**Commits:** `feat: end-to-end demo with compose service and documentation`.
 
 ## Fase 11: CI
 
-Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose` del README, así lo que pasa en CI pasa en cualquier máquina con Docker.
+Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose` del README, así lo que pasa en CI pasa en cualquier máquina con Docker. El diseño está en [DESIGN](DESIGN.md#ejecución-y-tests).
 
-- [ ] **`.github/workflows/contracts.yml`:**
-  - `docker compose build`, con cache de capas (`docker/build-push-action` + `cache-from: type=gha`) o `docker compose build` con BuildKit
+- [x] **`.github/workflows/contracts.yml`:**
+  - `docker compose build forge slither`, sin cache de capas: es el mismo comando que en una máquina limpia, y las tres imágenes de herramientas tardan 30 s sin cache. Se descartó el cache `type=gha` con `docker buildx bake`. Es una **decisión del autor**.
   - `run --rm forge fmt --check`
   - `run --rm -e FOUNDRY_PROFILE=ci forge test`
   - `run --rm forge snapshot --check`
   - `run --rm -e FORGE_SNAPSHOT_CHECK=true forge test --match-contract EscrowGasTest` (gas por operación)
   - `run --rm slither`
-- [ ] **`.github/workflows/api.yml`:**
+- [x] **`.github/workflows/api.yml`:**
   - `run --rm npm run lint`
   - `run --rm npm run typecheck`
   - `run --rm npm test`
   - chequeo de desincronización del ABI generado (fase 5): `run --rm forge build`, `run --rm npm run abi`, `git diff --exit-code api/src/generated`
-- [ ] **`.github/workflows/e2e.yml`:** `docker compose up -d --build`, `docker compose run --rm demo` y `docker compose down -v`.
+- [x] **`.github/workflows/e2e.yml`:** `docker compose up -d --build --wait`, `docker compose run --rm demo` y `docker compose down -v`, este último siempre. Si algo falla, imprime los logs de todo el stack.
+- [x] **Común a los tres:**
+  - corren en cada push a `main` y en cada pull request, sin filtros de paths. Es una **decisión del autor**; se descartaron ignorar los cambios solo de documentación y filtrar por carpeta.
+  - en un pull request, un push nuevo cancela la corrida anterior; en `main`, cada commit conserva su resultado
+  - runner `ubuntu-24.04` fijado, `timeout-minutes: 20` e impresión de la versión de Compose
+  - `permissions: contents: read`, `actions/checkout` v7.0.1 fijada por SHA (publicada el 20/07/2026, con más de dos semanas, como el resto de las versiones) y `persist-credentials: false`
+- [x] **Badges** de los tres workflows en el README. No estaban previstos; es una **decisión del autor**.
+
+**Verificación local**, con los mismos comandos sobre una copia limpia de los archivos versionados y las imágenes construidas sin cache:
+
+| Paso | Tiempo |
+| --- | --- |
+| Build de `forge`, `slither` y `npm` sin cache | 30 s |
+| `forge fmt --check` | 3,5 s |
+| `forge test` con el perfil `ci` | 64 s |
+| `forge snapshot --check` | 10 s |
+| Gas por operación | 0,7 s |
+| Slither, con 0 hallazgos | 1,3 s |
+| `npm run lint`, `typecheck` y `test` | 12, 4 y 14 s |
+| `forge build` y `npm run abi`: el archivo sale idéntico al versionado | 3 s |
+| `up -d --build --wait` y la demo | 14 y 13 s |
+
+- **Los chequeos fallan cuando deben:** con una sola unidad de gas cambiada en `.gas-snapshot` o en `snapshots/EscrowGasTest.json`, `snapshot --check` y `FORGE_SNAPSHOT_CHECK` salen con código 1. La demo ya se había probado con bugs en la fase 10, y Slither con un hallazgo en la fase 4.
+- **`actionlint`:** 0 errores en los tres workflows.
+- **GitHub:** pendiente del push.
 
 **Hecho cuando:** los workflows están en verde en `main`.
 
-**Commits:** `ci: contracts workflow`, `ci: api workflow`, `ci: e2e smoke test`.
+**Commits:** `ci: contracts workflow`, `ci: api workflow`, `ci: e2e smoke test`, `docs: ci and progress`.
 
 ## Fase 12: Cierre y entrega
 
