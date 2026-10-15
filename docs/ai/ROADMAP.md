@@ -751,7 +751,13 @@ Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose
       - En Anvil, con el flag, el límite del Escrow es exactamente 1,3 × `eth_estimateGas` (1.213.598). Sin el flag, forge no le pide ninguna estimación al nodo.
       - El stack local deploya y la demo sale con código 0.
     - El archivo de deploy que quedó describe contratos sin código, así que `deploy.sh` vuelve a deployar sin borrarlo.
-  - [ ] **Pendiente:** el deploy real y la corrida de la demo en Sepolia, que corre el autor con sus claves. Después se suman al README la dirección, el link al explorador y la salida de la demo, y se versiona `contracts/deployments/11155111.json`.
+  - **Segundo deploy: OK.** `Escrow` en `0x9a3b2D1C29c049F65875b6DfA0Cf869485625055` y el token en `0xbCb0FcD74C568Be777E86734db21d35EeB2C826e`, los dos verificados en Etherscan y en Sourcify.
+    - Gas: 6.492.677 el Escrow y 3.315.634 el token, cerca de la estimación del nodo. Costaron 0,0053 ETH, a 0,54 gwei.
+    - En la cadena: el código está en las dos direcciones, las ventanas son 300 y 600 s, y `startBlockHash` coincide con el hash real del bloque 11.921.812.
+    - La API contra Sepolia arrancó sin claves: el guard de cadena pasó y `/health` dio `ok` con lag 12, el de las confirmaciones.
+    - Las transacciones de la demo también cuestan unas 3 veces más que con Cancun, según `eth_estimateGas`: 241.527 un `mint` y 129.390 un `approve`.
+  - **Primera corrida de la demo: rechaza las claves.** Exigía el prefijo `0x`, que las billeteras suelen omitir al exportar; forge acepta las dos formas, y por eso el deploy había pasado con la misma clave. Ahora la demo también las acepta sin `0x` y con espacios alrededor. Comprobado en el stack local con las claves de Anvil sin `0x`.
+  - [ ] **Pendiente:** la corrida de la demo en Sepolia, que corre el autor con sus claves, y su salida en el README.
 - [x] **README final:**
   - comandos reales verificados
   - curl de ejemplo con output real
