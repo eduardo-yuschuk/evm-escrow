@@ -6,7 +6,7 @@ Escrow de tokens ERC-20 en Solidity, más una API/indexador en TypeScript que pr
 - **API e indexador** (`api/`): Node.js, TypeScript y viem. Indexa los eventos en Postgres y expone el estado de cada escrow por HTTP.
 - **Todo corre con Docker Compose:** nodo local (Anvil), deploy, base de datos, API, tests, análisis estático y demo.
 
-> **Estado:** el contrato, el indexador y la API HTTP están terminados y testeados. El stack completo (`docker compose up`), la demo y CI están en desarrollo; los comandos de esas secciones son los previstos.
+> **Estado:** el contrato, el indexador, la API HTTP y el stack completo (`docker compose up`) están terminados y testeados. La demo y CI están en desarrollo; los comandos de esas secciones son los previstos.
 
 ## Documentación
 
@@ -21,7 +21,7 @@ Escrow de tokens ERC-20 en Solidity, más una API/indexador en TypeScript que pr
 
 ## Requisitos
 
-- **Solo Docker:** Docker Engine 24 o superior con el plugin Compose v2 (`docker compose`).
+- **Solo Docker:** Docker Engine 24 o superior con el plugin Compose 2.20 o superior (`docker compose`).
 - No hace falta Node, npm, Foundry, solc ni Python en el host: cada comando, incluidos tests, lint, análisis estático y demo, corre en contenedores.
 - El repo se clona con un `git clone` normal, sin `--recursive`, porque no hay submódulos.
 
@@ -34,19 +34,23 @@ docker compose up --build
 
 Ese comando hace todo en orden:
 1. Construye las imágenes. Ahí se descargan solc 0.8.37 y las dependencias, y se compila el contrato.
-2. Levanta Anvil.
-3. Deploya el contrato y un token de prueba.
-4. Levanta Postgres y corre las migraciones.
-5. Arranca el indexador y la API.
+2. Levanta Anvil y Postgres.
+3. Deploya el contrato y un token de prueba, y le da 1.000.000 de tokens a cada una de las 10 cuentas de Anvil.
+4. Arranca la API, que corre las migraciones, indexa los eventos y sirve HTTP.
 
-Puertos expuestos (configurables en `.env`):
+Para dejarlo en segundo plano y esperar a que la API esté sana: `docker compose up --build -d --wait`.
+
+Puertos, publicados solo en `127.0.0.1` y configurables en `.env` (ver [`.env.example`](.env.example)):
 
 | Servicio | URL |
 | --- | --- |
 | API | `http://localhost:3000` |
 | Anvil (RPC, para conectar una wallet) | `http://localhost:8545`, chain id `31337` |
 
-Para empezar de cero: `docker compose down -v`.
+- **Logs de Anvil:** `docker compose up` no los muestra, porque Anvil registra cada llamada RPC. Se ven con `docker compose logs -f anvil`.
+- **Base de datos:** Postgres no publica su puerto. Para consultarla: `docker compose exec postgres psql -U escrow escrow`.
+- **Reinicios:** Anvil no guarda la cadena. Después de `docker compose down` y `up`, o de un `Ctrl+C` y `up`, la cadena es nueva: el contrato se deploya de nuevo, y la API vacía la base y reindexa.
+- **Empezar de cero:** `docker compose down -v`, que además borra la base y el archivo de deploy.
 
 ## Pruebas
 

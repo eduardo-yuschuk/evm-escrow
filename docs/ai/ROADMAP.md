@@ -529,36 +529,56 @@ test/support/                      Anvil, un schema propio en Postgres y el orá
 
 **Commits:** `build: postgres service for the api tests`, `test(api): projector and derived status units`, `test(api): indexer and chain guard against anvil and postgres`, `test(api): http endpoints and time-derived status`.
 
-## Fase 9: Stack compose
+## Fase 9: Stack compose ✅
 
-- [ ] **Servicio `anvil`:**
-  - imagen de Foundry fijada
-  - `anvil --host 0.0.0.0 --chain-id 31337`
+`docker compose up --build` levanta Anvil, deploya, levanta Postgres y arranca la API. Desde una copia limpia del repo, el build sin cache tarda 21 s y el stack queda sano 13 s después, con las imágenes base ya descargadas. El diseño está en [DESIGN](DESIGN.md#stack).
+
+- [x] **Servicio `anvil`:**
+  - imagen de Foundry fijada (`v1.8.3`), con `anvil --host 0.0.0.0 --chain-id 31337`
   - healthcheck con `cast block-number`
-  - puerto `${ANVIL_PORT:-8545}`
-- [ ] **Servicio `deployer`:**
-  - imagen `contracts:build`
-  - one-shot que depende de `anvil` sano
-  - `forge script script/Deploy.s.sol --rpc-url http://anvil:8545 --broadcast`, con la clave de la cuenta 0 de Anvil (pública y conocida, solo local)
-  - escribe en el volumen nombrado `deployments`
-- [ ] **Servicio `postgres`:**
+  - puerto `127.0.0.1:${ANVIL_PORT:-8545}`
+  - `attach: false`: registra cada llamada RPC, unas 2,4 líneas por segundo con el stack quieto, y tapaba los logs de la API en `docker compose up`. Siguen en `docker compose logs anvil`. Es una **decisión del autor**, y el README pasa a pedir Compose 2.20.
+- [x] **Servicio `deployer`:**
+  - imagen `contracts:build`, one-shot que depende de `anvil` sano
+  - corre `forge script script/Deploy.s.sol --broadcast` con la clave de la cuenta 0 de Anvil (pública y conocida, solo local)
+  - escribe en el volumen nombrado `deployments`. La imagen crea `deployments/` como usuario `foundry`, así un volumen nuevo toma ese dueño y el deployer escribe sin ser root.
+  - **Deploy idempotente.** No estaba previsto: `docker compose up` vuelve a correr el deployer en cada arranque, aunque el stack ya esté corriendo, y `docker compose run` de un servicio que depende de la API también. Un segundo deploy en la misma cadena dejaría a la API indexando el primer contrato. [`script/deploy.sh`](../../contracts/script/deploy.sh) deploya solo si `deployments/31337.json` no describe la cadena, con los mismos chequeos que el guard: el hash del `startBlock` y el código en la dirección del contrato.
+- [x] **Servicio `postgres`:**
   - [x] healthcheck con `pg_isready` y `docker/postgres/init.sql`, que crea `escrow_test`: adelantados a la fase 8
-  - puerto sin exponer por defecto, opcional por `.env`
-- [ ] **Servicio `api`:**
+  - puerto sin publicar. Compose no puede activar un puerto con una variable, así que no queda "opcional por `.env`": se consulta con `docker compose exec postgres psql -U escrow escrow`. Es una **decisión del autor**; se descartaron un archivo de override activable con `COMPOSE_FILE` y publicarlo siempre.
+- [x] **Servicio `api`:**
   - imagen `api:runtime`
-  - `depends_on`: `deployer` con `service_completed_successfully` y `postgres` con `service_healthy`
-  - lee `deployments` (solo lectura), corre las migraciones y arranca
-  - healthcheck contra `/health`, puerto `${API_PORT:-3000}`
-- [ ] `.env.example` con los overrides (`API_PORT`, `ANVIL_PORT`, `CONFIRMATIONS`, …). Compose funciona sin `.env`: cada variable tiene default `${VAR:-…}`.
-- [ ] **Contextos de build y `.dockerignore`** ajustados para builds rápidos y cacheables.
-- [ ] **Resiliencia:**
+  - `depends_on`: `anvil` y `postgres` sanos, y `deployer` con `service_completed_successfully`
+  - lee `deployments` (solo lectura), corre las migraciones y arranca, con `RESET_ON_CHAIN_MISMATCH=true`
+  - healthcheck contra `/health` con el `fetch` de Node, porque la imagen no tiene curl: cada 2 s, con `start_period` de 60 s
+  - puerto `127.0.0.1:${API_PORT:-3000}`. Publicar solo en localhost es una **decisión del autor**: Anvil tiene las cuentas desbloqueadas.
+- [x] [`.env.example`](../../.env.example) con los overrides: `API_PORT`, `ANVIL_PORT`, `CONFIRMATIONS`, `BATCH_SIZE`, `POLL_INTERVAL_MS`, `HEALTH_MAX_LAG`, `LOG_LEVEL` y `RESET_ON_CHAIN_MISMATCH`. Compose funciona sin `.env`. Las variables de la API pasan vacías si no se definen, y la API toma su propio default, así no se duplican.
+- [x] **Contextos de build y `.dockerignore`:**
+  - `contracts:build` copia solo `src/`, `script/` y `test/mocks/MockERC20.sol`, en lugar de todo el proyecto
+  - `api`: una etapa `deps` nueva instala las dependencias, y de ella salen `dev` y `build`. `build` copia solo `tsconfig*.json` y `src/`, y `runtime` toma `migrations/` del contexto.
+  - con un cambio en los tests, las dos imágenes del stack se reconstruían en 12,6 s (3,8 s y 8,8 s). Ahora salen enteras de cache, en 2,8 s.
+  - los `.dockerignore` ya excluían los artefactos (`out/`, `cache/`, `dependencies/`, `node_modules/`, `dist/`) y no hizo falta cambiarlos
+- [x] **Resiliencia:**
   - `docker compose up --build` desde cero deja `GET /health` en `ok`
-  - `docker compose down` seguido de `up` funciona (guard de cadena)
+  - `docker compose down` seguido de `up` funciona: deploy nuevo, y la API vacía la base y reindexa
   - `docker compose down -v` deja todo limpio
 
-**Hecho cuando:** un clon limpio levanta todo con un solo comando.
+**Verificación:**
+- **Copia limpia:** los archivos versionados más los nuevos, sin los ignorados, con los volúmenes borrados y `docker compose build --no-cache`. El stack queda sano y los cuatro curl del README devuelven lo documentado, también con la imagen de curl.
+- **`up` repetido** con el stack corriendo: el deployer corre de nuevo y no deploya. Lo mismo con `docker compose run` de un servicio descartable que depende de `api` sana, como va a ser la demo.
+- **`down` y `up`** con un escrow creado: el contrato se deploya de nuevo en la misma dirección, el guard detecta el `startBlockHash` distinto, la API vacía la base y reindexa, y el escrow 1 da `404`.
+- **Anvil reiniciado solo:** la API sale con código 1 por `ChainMismatchError`. Un `docker compose up -d` deploya de nuevo y la API se recupera.
+- **Postgres detenido:** la API pasa a `unhealthy` a los 5 s sin caerse. Vuelve a `healthy` 1 s después de que vuelve Postgres.
+- **Apagado:** `docker compose stop` tarda 0,35 s en `api`, 0,28 s en `anvil` y 0,27 s en `postgres`, todos con código 0, y `down` tarda 0,8 s. Anvil no necesita `init`: como PID 1 atiende SIGTERM.
+- **`docker compose up` en primer plano:** ninguna línea de Anvil. Con `Ctrl+C` se detiene todo en orden, y el siguiente `up` arranca una cadena nueva y reindexa.
+- **Overrides** con un archivo de entorno descartable: los puertos cambian, `CONFIRMATIONS=2` deja `lag: 1` en `ok` y `LOG_LEVEL=debug` activa los logs de nivel debug. Con `RESET_ON_CHAIN_MISMATCH=false`, cambiar `ANVIL_PORT` recrea Anvil, que arranca una cadena nueva, y la API aborta con el mensaje que indica cómo seguir.
+- **`deploy.sh`:** deploya con un `startBlock` que no existe en la cadena o sin código en la dirección del contrato, y no deploya con el archivo que escribió. `shellcheck` no marca nada.
+- **Herramientas:** con las imágenes nuevas, `npm test` (79 tests, con el stack corriendo), `npm run lint`, `npm run typecheck` y `forge build` pasan.
+- Docker clásico no se probó, porque en esta máquina solo hay Docker rootless. El stack no agrega bind mounts, solo volúmenes nombrados, y el único bind mount, `init.sql`, es de la fase 8.
 
-**Commits:** `build: api runtime image`, `build: anvil, deployer and postgres services`, `build: api service and healthchecks`.
+**Hecho cuando:** un clon limpio levanta todo con un solo comando. ✅
+
+**Commits:** `build: cacheable stack images`, `build: anvil and deployer services`, `build: api service and healthchecks`, `docs: compose stack and progress`. El plan original tenía `build: api runtime image` y `postgres` entre los servicios nuevos, pero la imagen `runtime` existe desde la fase 0 y `postgres` llegó en la fase 8.
 
 ## Fase 10: Script de demo
 

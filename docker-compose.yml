@@ -1,6 +1,44 @@
 name: evm-escrow
 
+# Stack: `docker compose up` starts anvil, deploys the contract, starts postgres and then the API.
+# Ports are published on 127.0.0.1 only. Every variable has a default; .env.example lists the
+# overrides.
+
 services:
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:v1.8.3
+    entrypoint: [anvil]
+    command: [--host, 0.0.0.0, --chain-id, "31337"]
+    # Anvil logs every RPC call, and the indexer polls every second: `docker compose up` leaves its
+    # logs out. They are still in `docker compose logs anvil`.
+    attach: false
+    ports:
+      - 127.0.0.1:${ANVIL_PORT:-8545}:8545
+    healthcheck:
+      test: [CMD, cast, block-number, --rpc-url, http://127.0.0.1:8545]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+
+  # One-shot: deploys the Escrow and a test token, and writes deployments/31337.json for the API.
+  # Skips the deployment when the file already describes the running chain (script/deploy.sh).
+  deployer:
+    build:
+      context: ./contracts
+      target: build
+    image: evm-escrow/contracts:build
+    command: [script/deploy.sh]
+    environment:
+      RPC_URL: http://anvil:8545
+      # Anvil account 0: its key is public and only meant for the local chain.
+      PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+    volumes:
+      - deployments:/app/deployments
+    depends_on:
+      anvil:
+        condition: service_healthy
+
+  # Not published: docker compose exec postgres psql -U escrow escrow
   postgres:
     image: postgres:17.11-alpine3.24
     environment:
@@ -17,6 +55,47 @@ services:
       interval: 1s
       timeout: 5s
       retries: 30
+
+  # Indexer and HTTP API in one process. Runs the migrations on start.
+  api:
+    build:
+      context: ./api
+      target: runtime
+    image: evm-escrow/api:runtime
+    environment:
+      RPC_URL: http://anvil:8545
+      DATABASE_URL: postgres://escrow:escrow@postgres:5432/escrow
+      DEPLOYMENTS_FILE: /deployments/31337.json
+      # Anvil is new on every start while the database is kept: reindex instead of aborting.
+      RESET_ON_CHAIN_MISMATCH: ${RESET_ON_CHAIN_MISMATCH:-true}
+      # Empty means the API's default (see .env.example).
+      CONFIRMATIONS: ${CONFIRMATIONS:-}
+      BATCH_SIZE: ${BATCH_SIZE:-}
+      POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-}
+      HEALTH_MAX_LAG: ${HEALTH_MAX_LAG:-}
+      LOG_LEVEL: ${LOG_LEVEL:-}
+    volumes:
+      - deployments:/deployments:ro
+    ports:
+      - 127.0.0.1:${API_PORT:-3000}:3000
+    healthcheck:
+      # The runtime image has no curl: Node's fetch. /health answers 503 while the indexer lags.
+      test:
+        - CMD
+        - node
+        - --eval
+        - "fetch('http://127.0.0.1:3000/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 2s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      anvil:
+        condition: service_healthy
+      deployer:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
 
   # Tools ("tools" profile): not started by `docker compose up`.
   # Usage: docker compose run --rm forge test | docker compose run --rm slither | docker compose run --rm npm run lint
@@ -77,3 +156,4 @@ services:
 
 volumes:
   pgdata:
+  deployments:

@@ -65,7 +65,7 @@ docker-compose.yml
 | Servicio | Rol | Arranca con `up` |
 | --- | --- | --- |
 | `anvil` | Nodo local | sí |
-| `deployer` | One-shot: deploya y escribe `deployments/31337.json` en un volumen compartido | sí |
+| `deployer` | One-shot: deploya y escribe `deployments/31337.json` en un volumen compartido, salvo que el archivo ya describa la cadena | sí |
 | `postgres` | Base de datos (y base `escrow_test` para los tests) | sí |
 | `api` | Indexador + API HTTP | sí |
 | `demo` | Flujo completo de punta a punta | no (`run`) |
@@ -74,6 +74,25 @@ docker-compose.yml
 | `slither` | Análisis estático | no (`run`) |
 
 Los servicios de herramientas usan `profiles`, así que `docker compose up` no los arranca. `docker compose run --rm <servicio> …` activa su perfil automáticamente.
+
+### Stack
+
+- **Orden de arranque.** Primero `anvil` sano, después `deployer`, y por último `api`, que además espera a `postgres` sano. Cada servicio de larga vida tiene healthcheck:
+  - `anvil`: `cast block-number`
+  - `postgres`: `pg_isready` por TCP
+  - `api`: `GET /health` con el `fetch` de Node, porque la imagen `runtime` no tiene curl. Como `/health` responde `503` mientras el indexador va atrasado, `api` recién figura sana cuando alcanzó a la cadena.
+- **Deploy idempotente.** `docker compose up` vuelve a correr los servicios one-shot en cada arranque, aunque el stack ya esté corriendo. También lo hace `docker compose run` de un servicio que depende de ellos, como la demo.
+  - Un segundo deploy en la misma cadena dejaría a la API indexando el primer contrato.
+  - Por eso [`script/deploy.sh`](../../contracts/script/deploy.sh) deploya solo si `deployments/31337.json` no describe la cadena. Hace los mismos chequeos que el guard de cadena: el hash del `startBlock` y que haya código en la dirección del contrato.
+- **Cadena efímera, base persistente.** Anvil no guarda estado, así que cada arranque de su contenedor es una cadena nueva. Los volúmenes `pgdata` y `deployments`, en cambio, sobreviven a `docker compose down`.
+  - Al volver a levantar, el deployer deploya de nuevo, y la API vacía la base y reindexa, porque compose fija `RESET_ON_CHAIN_MISMATCH=true`.
+  - Si Anvil se reinicia solo con la API corriendo, la API sale con código 1 por el guard de cadena. Un `docker compose up` lo recompone.
+- **Puertos.** La API y Anvil se publican solo en `127.0.0.1`. Anvil tiene las cuentas desbloqueadas: abierto a la red, cualquiera podría mandar transacciones con `eth_sendTransaction`. Postgres no se publica, porque compose no puede activar un puerto con una variable, y se consulta con `docker compose exec postgres psql -U escrow escrow`.
+- **Logs.** Anvil registra cada llamada RPC: con el stack quieto son unas 2,4 líneas por segundo, por el polling del indexador y los healthchecks. Con `attach: false`, `docker compose up` no las muestra, y `docker compose logs anvil` sí. Requiere Compose 2.20.
+- **Configuración.** Cada variable tiene default, así que no hace falta un `.env`. [`.env.example`](../../.env.example) lista los overrides: los puertos y las variables del indexador y la API. Si no se definen, compose las pasa vacías y la API toma su propio default, así no se duplican.
+- **Imágenes.** Las dos imágenes del stack copian solo lo que usan, así que cambiar los tests no reconstruye ninguna:
+  - `contracts:build` copia `src/`, `script/` y el token de prueba.
+  - En `api`, una etapa `deps` instala las dependencias y de ella salen `dev` y `build`. `build` copia solo `tsconfig*.json` y `src/`.
 
 ## Ejecución y tests
 
@@ -395,7 +414,7 @@ El código está en [`api/src/http/`](../../api/src/http/), con fastify.
 | `CONFIRMATIONS` | `0` | Bloques encima de un bloque para indexarlo |
 | `BATCH_SIZE` | `1000` | Bloques máximos por `eth_getLogs` y por transacción de DB |
 | `POLL_INTERVAL_MS` | `1000` | Espera entre consultas cuando no quedan bloques por indexar |
-| `RESET_ON_CHAIN_MISMATCH` | `false` | Vaciar y reindexar una DB de otra cadena o contrato, en lugar de abortar |
+| `RESET_ON_CHAIN_MISMATCH` | `false` (`true` en compose) | Vaciar y reindexar una DB de otra cadena o contrato, en lugar de abortar |
 | `HOST` | `0.0.0.0` | Interfaz donde escucha la API |
 | `PORT` | `3000` | Puerto de la API |
 | `HEALTH_MAX_LAG` | `10` | Bloques de atraso tolerados además de `CONFIRMATIONS` antes de que `/health` informe `degraded` |

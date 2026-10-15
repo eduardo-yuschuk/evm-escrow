@@ -262,3 +262,22 @@ Al repasar el manejo de errores apareció un bug que no se había probado en la 
   - **Un test que colgaba la corrida.** Con la reanudación rota, el test de kill esperaba para siempre a su proceso hijo. Ahora tiene un tope de espera y mata a sus hijos si falla.
   - **Un cache inesperado.** El cliente de viem cachea `getBlockNumber` durante el `pollingInterval`, así que un test leía un head viejo. El cliente de los tests va sin cache.
 - **Estabilidad.** 5 corridas seguidas en verde, una con un solo núcleo de CPU y otra desde un volumen de Postgres nuevo.
+
+## 22. Fase 9: stack compose
+
+> implementa la fase 9, preguntame si hay dudas
+
+**Output:** servicios `anvil`, `deployer` y `api` en `docker-compose.yml`, más `contracts/script/deploy.sh`, `.env.example` y los Dockerfiles reestructurados. `docker compose up --build` levanta todo y deja `/health` en `ok`. El detalle está en el [ROADMAP](ROADMAP.md), fase 9, y el diseño en [DESIGN](DESIGN.md#stack).
+
+La IA armó y probó un borrador antes de preguntar, así las preguntas venían con datos. Hizo tres, y el autor eligió la opción recomendada en cada una:
+
+| Pregunta | Respuesta |
+| --- | --- |
+| Anvil registra cada llamada RPC: 2,4 líneas por segundo con el stack quieto, que tapan los logs de la API | `attach: false`: fuera de `docker compose up` y disponibles con `docker compose logs anvil`. Se descartaron `--quiet`, que también oculta las transacciones, y dejarlo como estaba. Requiere Compose 2.20. |
+| Interfaces de los puertos publicados | Solo `127.0.0.1`, porque Anvil tiene las cuentas desbloqueadas. Se descartaron todas las interfaces y una variable `BIND_ADDRESS`. |
+| Puerto de Postgres "opcional por `.env`", que compose no puede activar con una variable | Sin publicar, con `docker compose exec postgres psql` en el README. Se descartaron un archivo de override activable con `COMPOSE_FILE` y publicarlo siempre. |
+
+- **Deploy idempotente, no previsto.** Al probar el borrador apareció que `docker compose up` vuelve a correr el deployer en cada arranque, aunque el stack ya esté corriendo. También lo hace `docker compose run` de un servicio que depende de la API, como va a ser la demo. Un segundo deploy en la misma cadena dejaría a la API indexando el primer contrato. `deploy.sh` deploya solo si el archivo de deploy no describe la cadena, con los mismos chequeos que el guard de cadena. Se prefirió un script del servicio a cambiar `Deploy.s.sol`, que ya estaba revisado y que también sirve para Sepolia.
+- **Imágenes cacheables.** Antes, cambiar un test reconstruía las dos imágenes del stack, en 12,6 s. Las etapas ahora copian solo lo que usan, y en ese caso salen enteras de cache, en 2,8 s.
+- **Sin defaults duplicados.** Compose pasa vacías las variables de la API que no están en `.env`, y la API ya trata una variable vacía como ausente. Así, los defaults viven en un solo lugar.
+- **Verificación.** Desde una copia limpia del repo, con build sin cache, el stack queda sano en 34 s. También se probaron `up` repetido, `down` y `up` con datos, Anvil reiniciado solo, Postgres detenido, `Ctrl+C`, los overrides de `.env` y los tiempos de apagado. Los 79 tests de la API pasan con las imágenes nuevas.
