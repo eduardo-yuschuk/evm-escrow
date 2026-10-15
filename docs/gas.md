@@ -22,6 +22,7 @@ Los dos fallan con una diferencia de una sola unidad de gas.
 - **Coverage no lo reescribe.** `forge coverage` compila sin optimizador y escribiría valores entre 1.537 y 4.062 de gas más altos, que ningún deploy paga. El benchmark consulta `vm.isContext(Coverage)` antes de escribir. Esa consulta no cambia el gas medido, porque no es el último frame, pero suma unos 715 al total de cada test en `.gas-snapshot`.
 - **Los números son de transacción completa,** incluidos los 21.000 de gas intrínseco, el calldata y el acceso en frío a cuentas y slots.
 - **Se verificaron contra una cadena real:** las mismas transacciones enviadas a Anvil dan exactamente el mismo `gasUsed` en el recibo.
+- **Son costos de Cancun,** el `evm_version` del proyecto, que Anvil 1.8.3 aplica con cualquier hardfork. Sepolia, en octubre de 2026, ya cobra mucho más por crear contratos: según su `eth_estimateGas`, el deploy de `Escrow` cuesta 6.545.373 y el del token de prueba 3.343.116, contra 933.537 y 508.180 acá. Por eso el deploy toma el gas del nodo (ver [Sepolia](ai/DESIGN.md#sepolia)).
 - **Determinismo:** `forge snapshot` usa una semilla fija para el fuzz, así que `.gas-snapshot` sale idéntico en cada corrida, incluidas las entradas de fuzz e invariantes. Se comprobó corriéndolo dos veces y comparando.
 
 ## Gas por operación

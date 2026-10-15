@@ -29,6 +29,9 @@ if [ -f "$file" ]; then
   fi
 fi
 
-# forge reads the key itself from ETHERSCAN_API_KEY.
-exec forge script script/Deploy.s.sol --rpc-url "$RPC_URL" --broadcast --private-key "$PRIVATE_KEY" \
-  ${ETHERSCAN_API_KEY:+--verify}
+# --skip-simulation makes forge take each gas limit from the node (eth_estimateGas) instead of from its
+# own simulation, which charges the gas costs of the compile target (cancun). Sepolia already charges
+# far more to create contracts: 6.5M gas for the Escrow instead of 934k, so the simulated limits run
+# out of gas. forge reads the Etherscan key itself from ETHERSCAN_API_KEY.
+exec forge script script/Deploy.s.sol --rpc-url "$RPC_URL" --broadcast --skip-simulation \
+  --private-key "$PRIVATE_KEY" ${ETHERSCAN_API_KEY:+--verify}

@@ -449,3 +449,17 @@ Antes de empezar, la IA hizo cuatro preguntas, porque cambiaban el alcance y el 
 - **Lo que no cambió:** los prompts citados en este log conservan los nombres viejos, porque son textuales. Las palabras del contenido, como "avances" o "correctitud", siguen en español.
 - **Verificación:** un chequeo automático confirmó que no quedan vínculos ni anclas rotos.
 - **Git:** los archivos se movieron con `mv`, sin tocar el índice. Git detecta el renombre al agregarlos.
+
+## 31. Sepolia: el primer deploy falla sin gas
+
+> (salida de `docker compose -f docker-compose.sepolia.yml run --rm deploy`, con las dos creaciones en `[Failed]`)
+
+**Output:** las dos transacciones se minaron y agotaron su límite de gas. El detalle está en la fase 12 del [ROADMAP](ROADMAP.md).
+
+- **Causa:** forge fija cada límite en 1,3 veces el gas de su propia simulación, que usa los costos de `cancun`, el `evm_version` del proyecto. Sepolia ya cobra mucho más por crear un contrato: según su `eth_estimateGas`, el Escrow necesita 6.545.373 de gas y no 933.537. La testnet simulada no lo podía mostrar, porque Anvil 1.8.3 cobra lo mismo con cualquier hardfork.
+- **Corrección:** `deploy.sh` agrega `--skip-simulation`, y con eso forge toma cada límite de `eth_estimateGas` del nodo.
+- **Verificada sin gastar más:**
+  - en Sepolia, con `eth_call` de las mismas creaciones: fallan con los límites viejos y pasan con los nuevos
+  - en Anvil, el límite pasa a ser 1,3 veces la estimación del nodo
+  - el stack local y la demo siguen en verde
+- **Documentación:** se agregó a [DESIGN](DESIGN.md#sepolia) y a [`docs/gas.md`](../gas.md) que los números de gas son de Cancun y cuánto cuesta el deploy en Sepolia.

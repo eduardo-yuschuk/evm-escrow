@@ -743,6 +743,14 @@ Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose
     - la demo recorre los cuatro caminos en 1 min 43 s, y una segunda corrida mintea solo lo que falta
     - con una clave faltante, una mal formada o una cuenta sin ETH, la demo falla con un mensaje claro y sin mostrar la clave
   - **En Anvil no cambia nada:** con el stack desde cero, la demo sale con código 0 y la misma salida, más la línea de ventanas. `npm run lint`, `typecheck` y los 79 tests de la API pasan.
+  - **Primer deploy real: falló.** Las dos creaciones se minaron y se quedaron sin gas: `MockERC20` con un límite de 660.634 y `Escrow` con 1.213.582. Costaron 0,00024 ETH.
+    - **Causa:** forge fija cada límite en 1,3 veces el gas de su propia simulación, que cobra los costos de `cancun`, el `evm_version` del proyecto. Sepolia ya cobra mucho más por crear un contrato. Según su `eth_estimateGas`, el token necesita 3.343.116 y el Escrow 6.545.373, de 6 a 7 veces más. Anvil 1.8.3 no reproduce ese costo con ningún hardfork, ni con `amsterdam`, y por eso la testnet simulada no lo mostró.
+    - **Corrección:** `deploy.sh` usa `--skip-simulation`, que hace que forge tome cada límite de `eth_estimateGas` del nodo, también por 1,3.
+    - **Verificación:**
+      - En Sepolia, sin gastar, con `eth_call` de las mismas creaciones: con los límites viejos fallan (`contract creation code storage out of gas` y `out of gas`), y con 1,3 veces la estimación del nodo devuelven el código.
+      - En Anvil, con el flag, el límite del Escrow es exactamente 1,3 × `eth_estimateGas` (1.213.598). Sin el flag, forge no le pide ninguna estimación al nodo.
+      - El stack local deploya y la demo sale con código 0.
+    - El archivo de deploy que quedó describe contratos sin código, así que `deploy.sh` vuelve a deployar sin borrarlo.
   - [ ] **Pendiente:** el deploy real y la corrida de la demo en Sepolia, que corre el autor con sus claves. Después se suman al README la dirección, el link al explorador y la salida de la demo, y se versiona `contracts/deployments/11155111.json`.
 - [x] **README final:**
   - comandos reales verificados
