@@ -1,6 +1,6 @@
 # Roadmap
 
-Ruta de desarrollo completa, desde el repo vacío hasta la entrega. Las decisiones de diseño están en [`DESIGN.md`](DESIGN.md), cómo correrlo en el [`README.md`](../../README.md) y el enunciado en [`CHALLENGE.md`](../../CHALLENGE.md).
+Ruta de desarrollo completa, desde el repo vacío hasta la entrega. Las decisiones de diseño están en [`DESIGN.md`](DESIGN.md) y cómo correrlo en el [`README.md`](../../README.md). El enunciado queda fuera del repo; cada regla está transcripta en [`docs/correctness.md`](../correctness.md).
 
 **Principios:**
 - **Solo Docker.** El único requisito del host es Docker con Compose v2. Todo corre en contenedores: scaffolding, build, tests, lint, deploy, Slither y demo. Nada asume Node, Foundry, solc ni Python instalados, y CI usa exactamente los mismos comandos.
@@ -25,7 +25,7 @@ Ruta de desarrollo completa, desde el repo vacío hasta la entrega. Las decision
 | 9. Stack compose | `anvil`, `deployer`, `postgres` y `api` con `docker compose up` | 5, 7 |
 | 10. Script de demo | Servicio `demo`: confirmar, rechazar, cancelar, vencer | 9 |
 | 11. CI | GitHub Actions con los mismos comandos `docker compose` | 3, 4, 8, 10 |
-| 12. Cierre | Verificación en un host solo con Docker, README final, entrega | todo |
+| 12. Cierre | Verificación en un host solo con Docker, revisiones, Sepolia, README final, entrega | todo |
 
 Las fases 3 y 4 pueden ir en paralelo con la 5. La 6 solo necesita el ABI y el deploy local.
 
@@ -33,9 +33,13 @@ Las fases 3 y 4 pueden ir en paralelo con la 5. La 6 solo necesita el ABI y el d
 
 ## Pendientes decididos
 
-Trabajo acordado que todavía no tiene fase asignada. Se agenda antes del cierre (fase 12).
+Trabajo acordado sin fase asignada, a resolver antes del cierre. Se resolvieron los dos al empezar la fase 12, el 15/10/2026, por **decisión del autor**:
+- **Owner:** no se implementa. Pasó a *Qué mejoraría con más tiempo* y la decisión 9 de [DESIGN](DESIGN.md#decisiones-sobre-ambigüedades-del-enunciado) explica por qué.
+- **Demo en Sepolia:** se implementó en la fase 12.
 
-- [ ] **Owner con alcance limitado a la creación de escrows.**
+El planteo original queda abajo como registro.
+
+- [x] **Owner con alcance limitado a la creación de escrows.** Pasó a mejoras.
   - `pause()` / `unpause()`: mientras está pausado, `createEscrow` revierte. Las cuatro acciones de resolución **siguen funcionando siempre**, así pausar nunca bloquea fondos.
   - **Whitelist de tokens** (`setTokenAllowed(token, bool)`): `createEscrow` solo acepta tokens permitidos. Quitar un token de la lista no afecta a los escrows ya creados con él.
   - **Restricción:** el owner no puede mover fondos ni cambiar el estado de un escrow existente, como pide el enunciado ("nadie, ni siquiera el owner").
@@ -47,7 +51,7 @@ Trabajo acordado que todavía no tiene fase asignada. Se agenda antes del cierre
     - impacto en el indexador (eventos nuevos) y en los tests (matriz de permisos)
   - Al implementarlo, actualizar la decisión 9 y la sección *Seguridad* de [DESIGN](DESIGN.md).
 
-- [ ] **Demo en testnet (Sepolia) con ventanas cortas.**
+- [x] **Demo en testnet (Sepolia) con ventanas cortas.** Implementada en la fase 12.
   - **Para qué:** mostrar el vencimiento en vivo, ya que en una testnet no se puede avanzar el tiempo del nodo. Es la razón por la que `CANCEL_WINDOW` y `TTL` son `immutable` y no constantes.
   - **Script de deploy parametrizable:** ventanas por variables de entorno (por ejemplo, 2 y 10 minutos) y verificación del contrato en el explorador.
   - **Clave del deployer:** se pasa por variable de entorno y nunca se commitea. Se corre con `docker compose run`.
@@ -707,27 +711,50 @@ Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose
   - **El gas medido no cambia:** la consulta va antes de `snapshotGasLastFrame` pero no cuenta como último frame, y `EscrowGasTest.json` sale idéntico.
   - **`.gas-snapshot` sí cambia:** mide cada función de test completa, así que los 7 tests del benchmark suben entre 713 y 724. Se regeneró; el resto de los tests no se movió.
   - **Verificación:** con un valor del JSON alterado a mano, `forge coverage` lo deja como está y `forge test` lo restaura. `forge snapshot --check`, `FORGE_SNAPSHOT_CHECK=true`, `fmt --check`, el perfil `ci` y Slither pasan, y coverage sigue en 100 % en `Escrow.sol`.
-- [ ] **Detalles para el README final**, de la misma verificación:
-  - la salida de la demo empieza con 5 líneas de encabezado (API, cadena, contratos y cuentas) que el README no muestra
-  - el cuarto curl (`ExpiredRecoverable`) da una lista vacía después de la demo, porque la demo recupera el escrow D
-  - `curlimages/curl` va sin versión fijada, a diferencia del resto de las imágenes
-- [ ] **Revisión de seguridad del contrato contra el checklist:**
+- [x] **Detalles para el README final**, de la misma verificación:
+  - la salida de la demo empieza con 5 líneas de encabezado (API, cadena, contratos y cuentas) que el README no muestra. **Ahora el README muestra la salida completa,** que además suma una línea con las ventanas.
+  - el cuarto curl (`ExpiredRecoverable`) da una lista vacía después de la demo, porque la demo recupera el escrow D. **El README lo explica** junto a su output real, y el ejemplo de listado pasó a `status=Expired`, que devuelve el escrow D.
+  - `curlimages/curl` va sin versión fijada, a diferencia del resto de las imágenes. **Fijada en `8.22.0`,** publicada el 02/09/2026; la `8.23.0` tenía un día.
+- [x] **Revisión de seguridad del contrato contra el checklist:** [`docs/security.md`](../security.md).
   - reentrancy y CEI
   - control de acceso por acción
   - tokens sin `bool`, con fee, con hooks y con blacklist
   - ninguna ruta para bloquear o robar fondos
   - sin owner
   - overflow de `uint64` en timestamps (irrelevante en la práctica, pero mencionarlo)
-- [ ] **Revisión de correctitud:** recorrer la tabla de reglas del enunciado y confirmar que cada fila tiene implementación y test.
-- [ ] **README final:**
+  - **Agregados a la lista:** reentrada de solo lectura, que nadie pueda gastar el allowance de otro, destinos de pago fijos, montos cero, donaciones, aislamiento por token y orden de transacciones.
+  - **Resultado:** ningún cambio en el contrato. Aparecieron dos limitaciones nuevas, causadas por el token, que se confirmaron con tests descartables antes de documentarlas:
+    - un token que bloquea al propio contrato congela todos los escrows de ese token
+    - un token que debita al que paga más que el monto, como una fee cobrada aparte, deja cortos los últimos escrows de ese token
+  - **Tests nuevos:** `test_KnownLimitation_BlacklistedEscrowFreezesItsTokenEscrows` y `test_KnownLimitation_FeeOnTopTokenUnderfundsLaterEscrows`, con el mock `FeeOnTopERC20`. Quedan 81 tests. `.gas-snapshot` se regeneró: además de los dos tests nuevos, los de `EscrowTokensTest` se movieron entre 22 y 89 de gas, porque el contrato de test creció y cambió su despacho. `EscrowGasTest.json` no cambió.
+  - Un beneficiary que no puede actuar, como la dirección del propio contrato, se resuelve con el TTL: se verificó con un test descartable y no se agregó una validación.
+- [x] **Revisión de correctitud:** [`docs/correctness.md`](../correctness.md). Cada fila de la tabla de reglas, las reglas generales y los requisitos del contrato tienen implementación y tests. Sin diferencias con el enunciado.
+- [x] **Demo en Sepolia** (de *Pendientes decididos*). Diseño en [DESIGN](DESIGN.md#sepolia).
+  - **`docker-compose.sepolia.yml`:** un proyecto de compose aparte, con `postgres`, `api` (puerto 3001, `CONFIRMATIONS=12`), `deploy` y `demo`. La API usa un RPC público por defecto y el archivo de deploy versionado, así que indexar el contrato deployado no necesita claves.
+  - **Claves en `.env.sepolia`,** ignorado por git, con [`.env.sepolia.example`](../../.env.sepolia.example). Solo lo leen `deploy` y `demo`.
+  - **Ventanas de 5 y 10 minutos,** no de 2 y 10: la de cancelación tiene que superar el atraso de la API con 12 confirmaciones, unos 2,5 minutos.
+  - **`deploy.sh`** agrega `--verify` si hay `ETHERSCAN_API_KEY`. **`Deploy.s.sol`** solo mintea a las cuentas de Anvil en Anvil.
+  - **La demo funciona fuera de Anvil:** toma las cuentas de `SENDER_PRIVATE_KEY` y `BENEFICIARY_PRIVATE_KEY`, mintea lo que le falta, no mina bloques y espera el vencimiento real. Antes de empezar verifica que las dos cuentas tengan ETH.
+  - **Comprobado contra Sepolia,** sin transacciones:
+    - el hash del header que calcula `vm.getRawBlockHeader` coincide con el real, que es lo que compara el guard de cadena
+    - el RPC público acepta `eth_getLogs` de 1.000 y 10.000 bloques e incluye `blockTimestamp`
+  - **Comprobado contra una testnet simulada:** Anvil con el chain id de Sepolia, un bloque por segundo, ventanas de 30 y 60 s, 3 confirmaciones y las claves por `.env.sepolia`.
+    - el deploy escribe el archivo con el dueño del host, y repetirlo no deploya de nuevo
+    - la demo recorre los cuatro caminos en 1 min 43 s, y una segunda corrida mintea solo lo que falta
+    - con una clave faltante, una mal formada o una cuenta sin ETH, la demo falla con un mensaje claro y sin mostrar la clave
+  - **En Anvil no cambia nada:** con el stack desde cero, la demo sale con código 0 y la misma salida, más la línea de ventanas. `npm run lint`, `typecheck` y los 79 tests de la API pasan.
+  - [ ] **Pendiente:** el deploy real y la corrida de la demo en Sepolia, que corre el autor con sus claves. Después se suman al README la dirección, el link al explorador y la salida de la demo, y se versiona `contracts/deployments/11155111.json`.
+- [x] **README final:**
   - comandos reales verificados
   - curl de ejemplo con output real
   - quitar la nota de estado
   - **resumen de las decisiones de diseño:** una sección que puntee todas las decisiones, una línea cada una, con vínculo a su desarrollo completo en [DESIGN](DESIGN.md). Cubre lo que pide el enunciado (decisiones, supuestos, mejoras) sin volver abrumador al README: el detalle técnico se queda en DESIGN.
-- [ ] **`docs/ai/` completo:** prompts relevantes, outputs y una breve nota de qué se aceptó, qué se cambió y por qué.
-- [ ] **Releer `CHALLENGE.md`** como checklist final de entregables.
+  - **Hecho:** clone con la URL real, la salida completa de la demo, los curl con sus respuestas reales (incluidos un `404` y un `400`) y la sección de Sepolia. Las decisiones quedaron en 29 líneas, en tres grupos, seguidas de supuestos, limitaciones y mejoras, cada una con su vínculo a DESIGN. También aclara por qué no hay `npm install`, que el enunciado nombra.
+- [x] **`docs/ai/` completo:** prompts relevantes, outputs y una breve nota de qué se aceptó, qué se cambió y por qué. La nota está al principio del [log](README.md#qué-se-aceptó-qué-se-cambió-y-por-qué).
+- [x] **Releer `CHALLENGE.md`** como checklist final de entregables: cada requisito y entregable está mapeado en [`docs/correctness.md`](../correctness.md).
+  - **El enunciado queda fuera del repo,** por **decisión del autor:** sigue en el `.gitignore`, y los vínculos a `CHALLENGE.md` del README, DESIGN, este ROADMAP y el log se reemplazaron por texto. Las menciones en las entradas históricas del log y de los avances quedan como están.
 - [ ] **Push a GitHub** y dar acceso a los evaluadores.
-- [ ] **Preparar la sesión de 45-60 minutos:** decisiones y trade-offs, limitaciones conocidas, y alternativas (pull contra push, reorgs por `blockHash`, permit).
+- [x] **Preparar la sesión de 45-60 minutos:** decisiones y trade-offs, limitaciones conocidas, y alternativas (pull contra push, reorgs por `blockHash`, permit). Por **decisión del autor**, el material queda fuera del repo.
 
 ---
 
@@ -739,9 +766,10 @@ Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose
 | Código de la API y tests (procesamiento de eventos) | 6, 7, 8 |
 | Comando o docker-compose con nodo, deploy, DB y API | 9 |
 | Script de flujo completo (confirmar, rechazar, cancelar, vencer) | 10 |
-| README (cómo correrlo, curl) y DESIGN (decisiones, supuestos, mejoras) | 12 (base ya escrita) |
+| README (cómo correrlo, curl, resumen de decisiones, supuestos y mejoras) y DESIGN (desarrollo) | 12 |
 | Historial de commits que muestre el avance | todas |
 | Outputs de prompts de IA | 0, 12 |
+| Opcional: deploy en una testnet (Sepolia) | 12 |
 
 ## Mapeo con los criterios de evaluación
 
@@ -755,4 +783,4 @@ Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose
 
 ## Fuera de alcance (posibles extensiones)
 
-Ver *Qué mejoraría con más tiempo* en [DESIGN](DESIGN.md#qué-mejoraría-con-más-tiempo): patrón pull, rollback de reorgs por `blockHash`, `createWithPermit`, webhooks o SSE, deploy en Sepolia, paginación por cursor, métricas.
+Ver *Qué mejoraría con más tiempo* en [DESIGN](DESIGN.md#qué-mejoraría-con-más-tiempo): owner limitado a la creación, patrón pull, rollback de reorgs por `blockHash`, `createWithPermit`, webhooks o SSE, paginación por cursor, métricas.

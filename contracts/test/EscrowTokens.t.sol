@@ -219,7 +219,7 @@ contract EscrowTokensTest is EscrowTestBase {
     /// @dev Documents the accepted limitation: the escrow measures what it receives, but each payout
     ///      assumes that sending `amount` takes exactly `amount` out of the escrow. A token that charges
     ///      its fee to the payer, on top of the amount, takes more, and the last escrows of that token
-    ///      are left short. Only that token's escrows are affected. See docs/seguridad.md.
+    ///      are left short. Only that token's escrows are affected. See docs/security.md.
     function test_KnownLimitation_FeeOnTopTokenUnderfundsLaterEscrows() public {
         FeeOnTopERC20 feeToken = new FeeOnTopERC20(100); // 1%
         address otherSender = makeAddr("otherSender");

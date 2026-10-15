@@ -1,6 +1,6 @@
 # Diseño y decisiones
 
-Diseño del contrato, del indexador y de la API, decisiones sobre las ambigüedades del enunciado y limitaciones conocidas. Cómo correr el proyecto y sus pruebas está en el [README](../../README.md), la ruta de desarrollo en el [ROADMAP](ROADMAP.md) y el enunciado en [`CHALLENGE.md`](../../CHALLENGE.md).
+Diseño del contrato, del indexador y de la API, decisiones sobre las ambigüedades del enunciado y limitaciones conocidas. Cómo correr el proyecto y sus pruebas está en el [README](../../README.md) y la ruta de desarrollo en el [ROADMAP](ROADMAP.md). Las revisiones de cierre están en [`docs/security.md`](../security.md) y [`docs/correctness.md`](../correctness.md).
 
 ## Índice
 
@@ -57,7 +57,9 @@ api/                API + indexador + demo (TypeScript) + Dockerfile
 docker/             Dockerfile de Slither, init de Postgres
 docs/               hallazgos de Slither, gas report, outputs de IA
 docker-compose.yml
+docker-compose.sepolia.yml   el contrato deployado en Sepolia: indexador, deploy y demo
 .env.example        overrides opcionales (puertos, confirmaciones); todo tiene default
+.env.sepolia.example         claves del deploy y la demo en Sepolia, en .env.sepolia (ignorado)
 ```
 
 ### Servicios de compose
@@ -108,11 +110,12 @@ Los servicios de herramientas usan `profiles`, así que `docker compose up` no l
 - **Gas.** Cada `forge test` reescribe `contracts/snapshots/EscrowGasTest.json` con el gas de cada operación; los cambios aparecen en el diff. `forge coverage` no lo reescribe, porque compila sin optimizador. Ver [`docs/gas.md`](../gas.md).
 - **Dependencias.** La primera vez, o cuando cambia el lockfile, el entrypoint instala las dependencias desde el contenedor en `api/node_modules/` y `contracts/dependencies/`. Las dos carpetas están ignoradas por git.
 - **Permisos.** Los servicios `forge` y `npm` arrancan como root y el entrypoint baja, con `setpriv`, al dueño del código montado. Así los archivos generados quedan del usuario del host con Docker clásico, rootless o Docker Desktop, sin configurar nada.
-- **Demo** ([`api/scripts/demo.ts`](../../api/scripts/demo.ts)). Manda las transacciones con viem desde las cuentas 0 y 1 de Anvil, que el deploy ya fondeó, así que no necesita mintear.
+- **Demo** ([`api/scripts/demo.ts`](../../api/scripts/demo.ts)). Manda las transacciones con viem desde las cuentas 0 y 1 de Anvil, que el deploy ya fondeó, así que no necesita mintear. Fuera de Anvil, en [Sepolia](#sepolia), usa las cuentas de `SENDER_PRIVATE_KEY` y `BENEFICIARY_PRIVATE_KEY` y mintea los tokens que le faltan.
   - El vencimiento se simula con `evm_increaseTime` (el `ttl` del archivo de deploy) y `evm_mine`: la API informa `ExpiredRecoverable` mientras el contrato sigue diciendo `Pending`.
   - Cada escrow se crea justo antes de su acción, y el de vencimiento va al final, porque avanzar el tiempo del nodo afecta a todos los escrows a la vez.
   - **Smoke test.** Después de cada transacción espera a que la API la refleje: que exista el escrow, que tenga `resolvedTx` o que su `now` haya alcanzado el bloque nuevo. Recién ahí compara la vista completa, así un valor equivocado falla enseguida, con cada campo distinto, y no al vencer la espera de 30 s. También verifica que los fondos lleguen a quien corresponde. Cualquier diferencia termina con código 1.
   - **Confirmaciones.** Con `CONFIRMATIONS` > 0, mina esa cantidad de bloques después de cada transacción. Si no, con el automine de Anvil el indexador no la vería nunca.
+  - **Fuera de Anvil** (el chain id del archivo de deploy no es `31337`): no mina ni mueve el tiempo. La red produce los bloques, y para el vencimiento espera un bloque con timestamp a partir de `expiresAt`. La espera máxima por paso suma 24 s por confirmación, y antes de empezar verifica que las dos cuentas tengan ETH para el gas.
   - **Código actual sin montar `./api`.** El servicio `demo` usa la imagen `api:dev` con `pull_policy: build`: compose la reconstruye en cada `run`, en 1,6 s si no cambió nada, y no instala nada en el host.
 - **CI** ([`.github/workflows/`](../../.github/workflows/)). Hay tres workflows: `contracts`, `api` y `e2e`. Corren los comandos del README en un runner `ubuntu-24.04` y no instalan nada, porque el runner ya trae Docker y Compose.
   - **Cuándo.** En cada push a `main` y en cada pull request, sin filtros de paths: un cambio en `docker-compose.yml` o en un Dockerfile siempre se prueba. En un pull request, un push nuevo cancela la corrida anterior; en `main`, cada commit conserva su resultado.
@@ -201,6 +204,8 @@ El error de vencimiento no puede llamarse `EscrowExpired` porque colisiona con e
 
 ### Seguridad
 
+La revisión punto por punto, con la evidencia de cada uno, está en [`docs/security.md`](../security.md).
+
 - **Checks-effects-interactions.** Al resolver, el orden es: chequeos, estado final, evento y recién al final la transferencia.
   - Además, todas las funciones que mueven fondos son `nonReentrant`, con `ReentrancyGuardTransient` (transient storage de Cancun, más barato que un slot de storage). Así se cubren tokens con hooks (ERC-777) y tokens maliciosos.
   - `createEscrow` es la excepción a CEI: necesita transferir **antes** de escribir el escrow para medir lo recibido. La protege `nonReentrant`.
@@ -263,10 +268,22 @@ Se descartó empaquetar `amount` como `uint96` junto a `beneficiary` para bajar 
   | --- | --- | --- |
   | `ESCROW_CANCEL_WINDOW` | `7200` (2 h) | Ventana de cancelación, en segundos |
   | `ESCROW_TTL` | `604800` (7 días) | Vencimiento, en segundos |
-  | `DEPLOY_MOCK_TOKEN` | `true` solo en la chain `31337` | Deploya un `MockERC20` y le da 1.000.000 de tokens a cada una de las 10 cuentas de Anvil. Si no se deploya, `token` queda en `0x000…0`. |
+  | `DEPLOY_MOCK_TOKEN` | `true` solo en la chain `31337` | Deploya un `MockERC20`. En Anvil, además, le da 1.000.000 de tokens a cada una de las 10 cuentas; en otra cadena no mintea, porque el mint del token de prueba es abierto. Si no se deploya, `token` queda en `0x000…0`. |
 
 - **Dry run:** sin `--broadcast` no escribe el archivo, porque no deployó nada.
 - **ABI tipado para la API:** `docker compose run --rm npm run abi` lee los artefactos de `contracts/out/` y genera [`api/src/generated/contracts.ts`](../../api/src/generated/contracts.ts), con el ABI y el bytecode de `Escrow` y `MockERC20` declarados `as const` para que viem infiera los tipos. El archivo se commitea, así la imagen de la API no compila contratos. Hay que regenerarlo cuando cambia el contrato; CI lo verifica.
+
+### Sepolia
+
+En una testnet no se puede adelantar el reloj del nodo, así que para ver un vencimiento en vivo el contrato se deploya con ventanas cortas. Para eso las ventanas son `immutable` y no constantes. Todo está en [`docker-compose.sepolia.yml`](../../docker-compose.sepolia.yml), un proyecto de compose aparte del stack local: sin Anvil ni deployer, con su propia base y la API en el puerto 3001.
+
+- **Ventanas:** 5 minutos para cancelar y 10 de TTL. La ventana de cancelación tiene que superar el atraso de la API, unos 2,5 minutos con 12 confirmaciones: si no, la API nunca mostraría un escrow nuevo como cancelable. Se descartaron los 2 minutos previstos en el ROADMAP por esa razón.
+- **Indexador:** `CONFIRMATIONS=12`, `RESET_ON_CHAIN_MISMATCH=false` (Sepolia no se reinicia, así que otra cadena en la base es un error) y `BATCH_SIZE=10000`, para ponerse al día desde el bloque del deploy con menos llamadas.
+- **RPC público por defecto** (`ethereum-sepolia-rpc.publicnode.com`), configurable con `SEPOLIA_RPC_URL`. Se verificó que acepta `eth_getLogs` de 10.000 bloques e incluye `blockTimestamp` en los logs.
+- **El archivo de deploy se commitea:** `contracts/deployments/11155111.json`. Así cualquiera indexa el contrato deployado sin claves ni cuentas, con un solo `docker compose -f docker-compose.sepolia.yml up --build`.
+- **Claves fuera del repo.** El deploy y la demo leen `.env.sepolia`, ignorado por git: la clave del sender, que también deploya, la del beneficiary y la API key de Etherscan. Los comandos no llevan secretos, así que no quedan en el historial del shell. El RPC queda guardado en `contracts/cache/`, también ignorado.
+- **Deploy:** el mismo `deploy.sh` del stack local, con `--verify` si hay API key de Etherscan, y el mismo chequeo de idempotencia: si el archivo ya describe Sepolia, no deploya. Se verificó contra Sepolia que el hash calculado del header (`vm.getRawBlockHeader`) coincide con el real, que es lo que compara el guard de cadena.
+- **Demo:** la misma de Anvil, en modo red real. Con 12 confirmaciones cada paso tarda unos 3 minutos, y la corrida completa, cerca de media hora.
 
 ## API e indexador
 
@@ -444,7 +461,7 @@ Se validan con zod al arrancar. Una variable vacía toma el default y un valor i
 | 6 | "Vencido" designa dos cosas | `ExpiredRecoverable` es el estado derivado en la API y `Expired` el final on-chain. |
 | 7 | "Cualquier ERC-20", pero fee-on-transfer figura como opcional | Se registra el monto **recibido**. Ignorarlo permitiría drenar otros escrows. |
 | 8 | El invariante del enunciado dice que el balance "iguala" la suma de pendientes | Es falso con donaciones directas al contrato. Se testea `balanceOf(token) >= Σ amount pendientes`, por token. |
-| 9 | "Ni siquiera el owner" supone un owner | **Por ahora no hay owner:** el contrato no necesita administración para funcionar. Queda pendiente agregar un owner que solo controle la creación: pausar nuevos escrows y mantener una whitelist de tokens, sin poder tocar escrows existentes (ver [ROADMAP](ROADMAP.md#pendientes-decididos)). |
+| 9 | "Ni siquiera el owner" supone un owner | **No hay owner:** el contrato no necesita administración para funcionar, y así ninguna garantía depende de la buena fe de alguien. Se evaluó un owner que solo controle la creación (pausar nuevos escrows y una whitelist de tokens, sin poder tocar los existentes) y quedó como [mejora](#qué-mejoraría-con-más-tiempo): acotaría los riesgos de tokens no estándar, a cambio de superficie y de confianza en el owner. |
 | 10 | Cómo se genera el `id` | Contador secuencial que arranca en 1. |
 | 11 | Qué devuelve `getEscrow` para un id inexistente | Revierte con `EscrowNotFound`. |
 | 12 | No se valida el token | Se exige `token != address(0)` y que tenga código. |
@@ -466,11 +483,16 @@ Se validan con zod al arrancar. Una variable vacía toma el default y un valor i
 
 ## Limitaciones conocidas
 
+Cada una está analizada en la [revisión de seguridad](../security.md). Las de tokens afectan solo a los escrows de ese token: un escrow nunca paga en otro token ni más que su monto.
+
 - **Tokens con blacklist o pausa** (USDC, USDT). Comportamiento fijado por los tests `test_KnownLimitation_*` de `EscrowTokens.t.sol`.
-  - Si el sender está bloqueado, `reject` y `recoverExpired` revierten siempre y los fondos quedan trabados.
+  - Si el sender está bloqueado, `cancel`, `reject` y `recoverExpired` revierten y los fondos quedan trabados hasta que el token lo desbloquee.
   - Si el beneficiary está bloqueado, no puede confirmar, pero sí rechazar.
+  - Si el bloqueado es el propio contrato, o el token está pausado, se congelan todos los escrows de ese token.
   - Con push no tiene solución. Un patrón pull (acreditar saldo y `withdraw(to)`) lo mitiga a cambio de complejidad: ver [mejoras](#qué-mejoraría-con-más-tiempo).
+- **Tokens que debitan al que paga más que el monto:** una fee cobrada aparte del monto, un rebasing negativo o una quema administrativa. Cada pago saca del contrato más de lo registrado, y los últimos escrows de ese token quedan cortos. Fijado por `test_KnownLimitation_FeeOnTopTokenUnderfundsLaterEscrows`. Revertir en el pago solo cambiaría la falta de fondos por un escrow trabado; la defensa es no aceptar esos tokens, con la whitelist de las mejoras.
 - **Tokens rebasing:** no soportados. El monto guardado se desfasa del balance real.
+- **Donaciones:** los tokens enviados directo al contrato no se pagan nunca y quedan trabados. Recuperarlos requeriría un owner.
 - **Carrera entre 0 y 2 h.** Sender y beneficiary pueden adelantarse mutuamente con front-running. El contrato garantiza que solo una resolución tiene efecto. No garantiza cuál.
 - **`block.timestamp`:** el productor del bloque puede manipularlo unos pocos segundos. Es irrelevante con ventanas de horas y días.
 - **Reorgs más profundos que N:** fuera del modelo. Requerirían rollback por `blockHash`.
@@ -482,6 +504,7 @@ Se validan con zod al arrancar. Una variable vacía toma el default y un valor i
 | **Fuzz + invariantes** | Ataca directo el 30 % de seguridad. Un handler de Foundry ejecuta secuencias aleatorias de create, cancel, confirm, reject, recover y `warp`, con varios tokens incluidos uno fee-on-transfer. Invariantes: `balanceOf(token) >= Σ pendientes`, contabilidad exacta con donaciones, un estado final nunca cambia, lo pagado nunca supera lo depositado e ids consistentes con `escrowCount`. Además, cada llamada se compara con un modelo de referencia. |
 | **Fee-on-transfer** | Es necesario para que "cualquier ERC-20" sea seguro (ver decisión 7). |
 | **Slither + CI** | Slither corre en CI y sus hallazgos se comentan en [`docs/slither.md`](../slither.md), incluido lo que Slither no puede ver (reentrada a través del assembly de `SafeERC20`). GitHub Actions corre exactamente los mismos `docker compose run …` documentados en el [README](../../README.md#pruebas): fmt, tests, snapshots de gas, Slither, lint, typecheck, tests de la API y el ABI generado al día, más un smoke test con la demo. Si pasa en CI, pasa en cualquier máquina con Docker. |
+| **Deploy en Sepolia** | Muestra el vencimiento en vivo, donde no se puede adelantar el reloj, y el indexador contra una red real con confirmaciones. El contrato está verificado en Etherscan, y cualquiera puede indexarlo sin claves. Ver [Sepolia](#sepolia). |
 | **Gas report + storage** | Gas por operación medido y verificado contra recibos de Anvil, `.gas-snapshot` para regresiones y 7 variantes de optimización medidas con su veredicto, en [`docs/gas.md`](../gas.md). El layout de 4 slots y los deadlines derivados están justificados en [Storage](#storage). |
 
 Se descartaron:
@@ -490,10 +513,11 @@ Se descartaron:
 
 ## Qué mejoraría con más tiempo
 
+- **Owner limitado a la creación** (decisión 9): `Ownable2Step`, `pause()` que solo bloquee `createEscrow` y una whitelist de tokens que no afecte a los escrows ya creados. Acotaría las limitaciones de tokens no estándar. Exige eventos nuevos en el indexador y una matriz de permisos en los tests.
 - **Patrón pull** opcional para resolver el problema de los tokens con blacklist.
 - **Rollback de reorgs por `blockHash`** para indexar sin esperar confirmaciones.
 - **`createWithPermit`** (EIP-2612) con `try/catch` sobre el `permit`.
 - **Webhooks o SSE** cuando un escrow cambia de estado, con outbox transaccional en Postgres.
-- **Deploy en Sepolia** con ventanas cortas para la demo en vivo: está en *Pendientes decididos* del [ROADMAP](ROADMAP.md#pendientes-decididos).
+- **Tag `finalized` en el indexador,** como alternativa a N confirmaciones en redes reales.
 - **Paginación por cursor**, métricas Prometheus y rate limiting.
 - **Soporte multi-contrato o multi-chain** en el indexador.

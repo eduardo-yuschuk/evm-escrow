@@ -4,11 +4,49 @@ El enunciado pide "incluir outputs de prompts". Este proyecto se desarrolla con 
 
 Los outputs largos están en archivos aparte. Los artefactos en sí (README, ROADMAP, código) están en el repo y su historia queda en los commits.
 
+## Qué se aceptó, qué se cambió y por qué
+
+Resumen de todo el log. El número entre paréntesis es la entrada.
+
+**Lo que decidió el autor, y no la IA:**
+- **El stack y el alcance:** Solidity 0.8.37 con `evm_version = "cancun"` (5), solo Docker como requisito del host (6), el gas report y la optimización de storage como opcional (3), y la demo en Sepolia, que la IA proponía dejar como mejora (29).
+- **Contra la recomendación de la IA:**
+  - chequeos inline en cada acción, en lugar de helpers por parte, para leer el contrato de un vistazo (10)
+  - ventanas `immutable` y no constantes, para poder hacer la demo en Sepolia (10)
+  - descartar `via_ir` y `unchecked`, por un ahorro de gas menor al 2 % (14)
+- **Interfaz:** el token se mantiene como `address`, los eventos de resolución solo con `id` y timestamps `uint64` (8, 9).
+- **Documentación:** separar el diseño del README (16), y que el README final resuma cada decisión en una línea con vínculo a DESIGN (17). El enunciado queda fuera del repo y el material de la sesión también (29).
+
+**Lo que propuso la IA y el autor aceptó:**
+- **Contrato:** `ReentrancyGuardTransient`, el orden CEI al resolver y `createEscrow` midiendo lo recibido bajo el guard (10).
+- **Opciones recomendadas en cada cuestionario:** logs de Anvil fuera de `up`, puertos solo en `127.0.0.1` y Postgres sin publicar (22); la imagen de la demo reconstruida en cada `run` (23); CI sin cache ni filtros de paths, con badges (24); validación estricta del listado y el umbral de `/health` (20).
+- **Cierre:** coverage sin reescribir el snapshot de gas (28) y el owner limitado como mejora en lugar de implementarlo (29).
+
+**Errores de la IA, corregidos:**
+- Un comentario afirmaba que `SafeERC20` aceptaría un EOA como token. Es falso, y el autor ya lo había notado (10).
+- Un test de reentrada pasaba por falta de allowance y no por el ataque. Lo expuso una mutación, y se reescribió con un contrato atacante (11).
+- La primera versión del handler de invariantes casi no tenía resoluciones exitosas (12).
+- `/health` recortaba el lag a 0, y no detectaba un Anvil reiniciado (19).
+- Los ejemplos curl tenían direcciones abreviadas que la API rechaza (19).
+- Con Postgres pausado, una request colgaba más de 3 minutos (20).
+- Una prueba de la demo pasó sin error por una trampa de compose (23).
+- `forge coverage` dejaba modificado un archivo versionado (27, 28).
+
+**Cómo se verificó lo que generó la IA:**
+- **Mutaciones a mano:** 10 bugs en el contrato (11), 10 solo contra los invariantes (12), 19 en la API (21) y 3 contra la demo (23). Todos detectados.
+- **Contra una cadena real:** el gas, contra recibos de Anvil (13), y el indexador y la API, contra Anvil y Postgres antes de tener tests (18, 19).
+- **Pruebas descartables antes de afirmar algo,** por ejemplo:
+  - lo que no ve Slither (13)
+  - el hash del bloque inicial (14)
+  - el fallback de timestamps (18)
+  - las limitaciones nuevas de la revisión de seguridad (29)
+- **Desde cero:** un clon en un host con solo Docker (27) y CI en GitHub (25).
+
 ## 1. Transcripción del enunciado
 
 > genera CHALLENGE.md a partir del pdf
 
-**Output:** [`CHALLENGE.md`](../../CHALLENGE.md), una transcripción literal del PDF a Markdown.
+**Output:** `CHALLENGE.md`, una transcripción literal del PDF a Markdown. Por decisión del autor queda fuera del repo (entrada 29); cada regla está transcripta en [`docs/correctness.md`](../correctness.md).
 - Las tablas se pasaron a tablas Markdown.
 - El diagrama de estados se pasó a Mermaid.
 
@@ -16,7 +54,7 @@ Los outputs largos están en archivos aparte. Los artefactos en sí (README, ROA
 
 > busca inconsistencias, errores y ambiguedades en la definición de CHALLENGE.md
 
-**Output:** [`01-analisis-ambiguedades.md`](01-analisis-ambiguedades.md). Son unos 30 puntos con una decisión sugerida para cada uno.
+**Output:** [`01-ambiguity-analysis.md`](01-ambiguity-analysis.md). Son unos 30 puntos con una decisión sugerida para cada uno.
 
 ## 3. Decisiones y README
 
@@ -172,7 +210,7 @@ El autor descartó `via_ir` y `unchecked`, y quedó registrado en `docs/gas.md` 
 
 > bajame este reporte completo a docs/ai/avances/dia1.md
 
-**Output:** [`avances/dia1.md`](avances/dia1.md), con el mismo resumen fechado y adaptado como documento.
+**Output:** [`progress/day1.md`](progress/day1.md), con el mismo resumen fechado y adaptado como documento.
 
 > sí, agregá la entrada 15 al README de docs/ai y mantengamos registrando todos los prompts como venimos haciendo
 
@@ -186,7 +224,7 @@ El autor descartó `via_ir` y `unchecked`, y quedó registrado en `docs/gas.md` 
 - [`DESIGN.md`](DESIGN.md): todo el diseño que estaba en el README, sin cambios de contenido. Incluye arquitectura, versiones fijadas, servicios de compose, detalles de ejecución, contrato, API e indexador, decisiones, limitaciones, opcionales y mejoras.
 - [`ROADMAP.md`](ROADMAP.md): movido desde la raíz, con los vínculos a DESIGN, README y CHALLENGE corregidos.
 - [`README.md`](../../README.md): descripción breve, tabla de documentación, requisitos, cómo levantar el stack y los comandos de cada prueba (contrato, Slither, API, ABI, demo y curl).
-- Se actualizaron las referencias en `docs/gas.md`, `docs/slither.md`, `01-analisis-ambiguedades.md`, `avances/dia1.md` y un comentario de `EscrowTokens.t.sol`. Un chequeo automático confirmó que no quedan vínculos ni anclas rotos.
+- Se actualizaron las referencias en `docs/gas.md`, `docs/slither.md`, `01-ambiguity-analysis.md`, `progress/day1.md` y un comentario de `EscrowTokens.t.sol`. Un chequeo automático confirmó que no quedan vínculos ni anclas rotos.
 
 ## 17. Resumen de decisiones en el README final
 
@@ -337,7 +375,7 @@ Antes de preguntar, la IA corrió todos los pasos de los workflows sobre una cop
 
 > genera avances/dia2.md con lo que hicimos en el proyecto
 
-**Output:** [`avances/dia2.md`](avances/dia2.md), con el mismo formato que el del día 1: las fases 6 a 11 terminadas, la reorganización de la documentación, las decisiones del autor de cada fase, lo que falta (fase 12 y los pendientes decididos) y el estado del repo.
+**Output:** [`progress/day2.md`](progress/day2.md), con el mismo formato que el del día 1: las fases 6 a 11 terminadas, la reorganización de la documentación, las decisiones del autor de cada fase, lo que falta (fase 12 y los pendientes decididos) y el estado del repo.
 
 - **Enunciado fuera del repo.** Al revisar el estado apareció que `CHALLENGE.md` está en el `.gitignore` desde `1f7449f` y no existe en la copia local, pero el README, DESIGN, el ROADMAP y este log lo enlazan. Quedó anotado como decisión del autor para el cierre, junto con la del PDF.
 
@@ -361,3 +399,53 @@ Antes de preguntar, la IA corrió todos los pasos de los workflows sobre una cop
 - **Riesgo revisado:** si la consulta de contexto contara como último frame, el benchmark mediría esa consulta y no la operación. `EscrowGasTest.json` sale idéntico, así que no cuenta.
 - **Prueba de que sigue escribiendo:** con un valor del JSON alterado a mano, coverage lo deja como está y `forge test` lo restaura.
 - **`.gas-snapshot` regenerado:** mide cada función de test completa, y los 7 tests del benchmark suben entre 713 y 724 por la consulta. El gas del contrato no cambió.
+
+## 29. Fase 12: el resto del cierre
+
+> sigamos con las partes que restan de la fase 12 del roadmap
+
+Antes de empezar, la IA hizo cuatro preguntas, porque cambiaban el alcance y el orden del trabajo:
+
+| Pregunta | Respuesta del autor |
+| --- | --- |
+| Owner con pausa y whitelist de tokens, de *Pendientes decididos* | Pasarlo a mejoras, la opción recomendada |
+| Demo en Sepolia con ventanas cortas, también pendiente | Hacerla ahora. La IA había recomendado dejarla como mejora |
+| `CHALLENGE.md` está en el `.gitignore` pero el README, DESIGN, el ROADMAP y este log lo enlazan | Sacar los vínculos: el enunciado queda fuera del repo |
+| Dónde va el material para la sesión de 45-60 minutos | Fuera del repo |
+
+**Output:** el detalle de cada ítem está en la fase 12 del [ROADMAP](ROADMAP.md).
+
+- **Revisión de seguridad:** [`docs/security.md`](../security.md). El contrato no cambió. Aparecieron dos limitaciones nuevas, las dos causadas por el token: un token que bloquea al propio contrato congela sus escrows, y uno que debita al que paga más que el monto deja cortos a los últimos. La IA las confirmó con tests descartables antes de escribirlas, y quedaron fijadas con dos tests `test_KnownLimitation_*`, en total 81.
+- **Revisión de correctitud:** [`docs/correctness.md`](../correctness.md). Cubre cada regla del contrato, los requisitos de la API y los entregables, así que también es el checklist final del enunciado.
+- **Sepolia:**
+  - `docker-compose.sepolia.yml`, con la API contra un RPC público y el archivo de deploy versionado: indexar el contrato deployado no necesita claves
+  - las claves del deploy y la demo, en `.env.sepolia`, que git ignora
+  - la demo, que ahora funciona fuera de Anvil: espera las confirmaciones y el vencimiento en tiempo real
+  - **Ventanas de 5 y 10 minutos,** no de 2 y 10 como preveía el ROADMAP: con 12 confirmaciones, la API tarda unos 2,5 minutos en ver un escrow, y con 2 minutos nunca lo mostraría como cancelable.
+  - **Verificado antes de gastar gas.** Contra Sepolia, sin transacciones: el hash del bloque inicial que calcula el deploy coincide con el real, y el RPC público acepta los rangos de logs del indexador. Contra un Anvil que imita una testnet, el deploy, su idempotencia, la demo completa y los errores de configuración.
+  - **Pendiente:** el deploy real y la demo en Sepolia, que corre el autor con sus claves.
+- **README final:**
+  - la salida completa de la demo y los curl con sus respuestas reales
+  - `curlimages/curl` fijada en `8.22.0`
+  - la sección de Sepolia
+  - el resumen de decisiones en 29 líneas, más supuestos, limitaciones y mejoras, cada una con su vínculo a DESIGN
+- **Este log:** la nota de [qué se aceptó, qué se cambió y por qué](#qué-se-aceptó-qué-se-cambió-y-por-qué), al principio.
+- **Una trampa en la verificación.** La primera tanda de curl respondió `404` en rutas que existen: otro proyecto de compose de la máquina de desarrollo publicaba el puerto 3000, y la API del stack no había podido levantar. Se repitió con `API_PORT=3002`.
+
+## 30. Nombres de archivo en inglés
+
+> cambia el nombre de archivo y las referencias de docs/correctitud.md, docs/seguridad.md, docs/ai/avances (y los archivos) y docs/ai/01-analisis-ambiguedades.md al inglés. el contenido queda como está en español
+
+**Output:** cuatro renombres, con el contenido sin cambios:
+
+| Antes | Ahora |
+| --- | --- |
+| `docs/correctitud.md` | [`docs/correctness.md`](../correctness.md) |
+| `docs/seguridad.md` | [`docs/security.md`](../security.md) |
+| `docs/ai/avances/dia1.md` y `dia2.md` | [`docs/ai/progress/day1.md`](progress/day1.md) y [`day2.md`](progress/day2.md) |
+| `docs/ai/01-analisis-ambiguedades.md` | [`docs/ai/01-ambiguity-analysis.md`](01-ambiguity-analysis.md) |
+
+- **Referencias actualizadas:** el README, DESIGN, el ROADMAP, este log, `docs/correctness.md` y un comentario de `EscrowTokens.t.sol`.
+- **Lo que no cambió:** los prompts citados en este log conservan los nombres viejos, porque son textuales. Las palabras del contenido, como "avances" o "correctitud", siguen en español.
+- **Verificación:** un chequeo automático confirmó que no quedan vínculos ni anclas rotos.
+- **Git:** los archivos se movieron con `mv`, sin tocar el índice. Git detecta el renombre al agregarlos.
