@@ -532,3 +532,14 @@ Tiempos medidos en la cadena: unos 29 minutos en total y 156 s por paso. DESIGN 
 - **Costo:** 0,193 MON. Cada recibo informa como gas usado el límite completo, 1,3 veces la estimación del nodo, y así se confirmó que Monad cobra el límite.
 - **Demo:** 159 s del `mint` al `recoverExpired`, contra 29 minutos en Sepolia. Cada paso tardó unos 6 s.
 - **Monadscan no los muestra como verificados,** porque solo se verificaron en Sourcify.
+
+## 37. Revisión antes de la entrega
+
+> ya está en github el repo y es público, los evaluadores tienen acceso, nos falta algo?
+
+**Output:** la IA revisó la entrega contra GitHub:
+- **Sincronización:** `main` coincide con `origin/main`, y no quedan cambios sin commitear.
+- **Historial limpio:** ningún commit contiene claves (`.env*`), `CHALLENGE.md`, `notas/`, PDFs ni la caché de forge.
+- **Un clone limpio desde GitHub funciona:** levanta el stack y la demo pasa.
+- **El workflow `e2e` del último push falló** en "Start the stack" a los 16 s; normalmente tarda 97 s. No se pudo reproducir: con el mismo commit todo pasa, y las imágenes fijadas siguen disponibles. Los logs del job piden sesión en GitHub, así que el autor tiene que volver a correrlo. El badge de `e2e` del README va a mostrar el fallo hasta entonces.
+- **ROADMAP:** se cerraron el push y el ítem del PDF, que ya no existe.

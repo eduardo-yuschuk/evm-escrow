@@ -99,7 +99,7 @@ Como no hay tooling local, la infraestructura Docker va **primero**: sin ella no
 - [x] **Dependencias en el host.** El entrypoint las instala desde el contenedor en `contracts/dependencies/` y `api/node_modules/`, ignorados por git, cuando faltan o cambia el lockfile (stamp con sha256). Se descartaron los volúmenes nombrados anidados en el bind mount, porque con Docker clásico dejan directorios vacíos de root en el host.
 - [x] `.dockerignore` por imagen, `.gitignore` y `.editorconfig`.
 - [x] `docs/ai/`: log de prompts y outputs, y el análisis de ambigüedades.
-- [ ] Sacar el PDF del repo o decidir si se versiona (**decisión del autor**).
+- [x] Sacar el PDF del repo o decidir si se versiona (**decisión del autor**). No quedó ningún PDF: no hay uno en el repo ni en ningún commit del historial, que se revisó entero antes de la entrega.
 - `.env.example` pasa a la fase 9: recién ahí hay variables para sobrescribir (puertos, confirmaciones).
 
 **Hecho cuando:** en un clon limpio, con imágenes construidas con `--no-cache`, `docker compose run --rm forge build` y `docker compose run --rm npm run build` pasan sin código de negocio. ✅ También pasan `npm run typecheck`, `npm run lint` y `npm test`.
@@ -782,7 +782,12 @@ Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose
 - [x] **`docs/ai/` completo:** prompts relevantes, outputs y una breve nota de qué se aceptó, qué se cambió y por qué. La nota está al principio del [log](README.md#qué-se-aceptó-qué-se-cambió-y-por-qué).
 - [x] **Releer `CHALLENGE.md`** como checklist final de entregables: cada requisito y entregable está mapeado en [`docs/correctness.md`](../correctness.md).
   - **El enunciado queda fuera del repo,** por **decisión del autor:** sigue en el `.gitignore`, y los vínculos a `CHALLENGE.md` del README, DESIGN, este ROADMAP y el log se reemplazaron por texto. Las menciones en las entradas históricas del log y de los avances quedan como están.
-- [ ] **Push a GitHub** y dar acceso a los evaluadores.
+- [x] **Push a GitHub** y dar acceso a los evaluadores. El repo es público.
+  - **Revisado antes de avisar:**
+    - `main` coincide con `origin/main`.
+    - Ningún commit del historial contiene `.env`, `.env.sepolia`, `.env.monad`, `CHALLENGE.md`, `notas/`, `contracts/cache/` ni `contracts/broadcast/`.
+    - Un clone limpio desde GitHub levanta el stack y pasa la demo.
+  - **El `e2e` del último push falló** al levantar el stack, a los 16 s, cuando normalmente tarda 97 s. Con el mismo commit, desde un clone limpio, el stack levanta y la demo pasa, y las imágenes fijadas siguen disponibles en sus registries. Todo indica una falla transitoria del runner o de un registry. Los logs del job solo se ven con sesión en GitHub.
 - [x] **Preparar la sesión de 45-60 minutos:** decisiones y trade-offs, limitaciones conocidas, y alternativas (pull contra push, reorgs por `blockHash`, permit). Por **decisión del autor**, el material queda fuera del repo.
 
 ---
