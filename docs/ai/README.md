@@ -332,3 +332,11 @@ Antes de preguntar, la IA corrió todos los pasos de los workflows sobre una cop
 - **Sin advertencias:** ningún job dejó anotaciones.
 - **Docker clásico cubierto.** El runner de GitHub usa Docker clásico, que en la fase 9 no se había podido probar. El stack y los servicios de herramientas pasaron sin ajustes.
 - **Límite de la verificación.** Los logs de los jobs piden un token con permisos de admin, aun en un repo público. Por eso se verificaron los resultados y los tiempos de cada paso, pero no su salida.
+
+## 26. Avances del día 2
+
+> genera avances/dia2.md con lo que hicimos en el proyecto
+
+**Output:** [`avances/dia2.md`](avances/dia2.md), con el mismo formato que el del día 1: las fases 6 a 11 terminadas, la reorganización de la documentación, las decisiones del autor de cada fase, lo que falta (fase 12 y los pendientes decididos) y el estado del repo.
+
+- **Enunciado fuera del repo.** Al revisar el estado apareció que `CHALLENGE.md` está en el `.gitignore` desde `1f7449f` y no existe en la copia local, pero el README, DESIGN, el ROADMAP y este log lo enlazan. Quedó anotado como decisión del autor para el cierre, junto con la del PDF.

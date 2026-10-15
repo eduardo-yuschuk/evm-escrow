@@ -13,3 +13,4 @@ api/coverage/
 # Local environment
 .env
 CHALLENGE.md
+.vscode/
