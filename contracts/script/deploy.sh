@@ -4,7 +4,8 @@
 # a second deployment on a running chain would leave the API indexing the first contract. A restarted
 # Anvil is a new chain, so it gets a new deployment.
 #
-# With ETHERSCAN_API_KEY set (Sepolia, docker-compose.sepolia.yml), forge also verifies the contracts.
+# forge also verifies the contracts: on a Sourcify instance with SOURCIFY_URL set (Monad testnet,
+# docker-compose.monad.yml), or on Etherscan with ETHERSCAN_API_KEY set (docker-compose.sepolia.yml).
 set -eu
 
 : "${RPC_URL:?}" "${PRIVATE_KEY:?}"
@@ -29,9 +30,16 @@ if [ -f "$file" ]; then
   fi
 fi
 
+if [ -n "${SOURCIFY_URL:-}" ]; then
+  set -- --verify --verifier sourcify --verifier-url "$SOURCIFY_URL"
+elif [ -n "${ETHERSCAN_API_KEY:-}" ]; then
+  # forge reads the key itself from ETHERSCAN_API_KEY.
+  set -- --verify
+fi
+
 # --skip-simulation makes forge take each gas limit from the node (eth_estimateGas) instead of from its
 # own simulation, which charges the gas costs of the compile target (cancun). Sepolia already charges
 # far more to create contracts: 6.5M gas for the Escrow instead of 934k, so the simulated limits run
-# out of gas. forge reads the Etherscan key itself from ETHERSCAN_API_KEY.
+# out of gas.
 exec forge script script/Deploy.s.sol --rpc-url "$RPC_URL" --broadcast --skip-simulation \
-  --private-key "$PRIVATE_KEY" ${ETHERSCAN_API_KEY:+--verify}
+  --private-key "$PRIVATE_KEY" "$@"

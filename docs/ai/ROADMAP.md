@@ -758,6 +758,13 @@ Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose
     - Las transacciones de la demo también cuestan unas 3 veces más que con Cancun, según `eth_estimateGas`: 241.527 un `mint` y 129.390 un `approve`.
   - **Primera corrida de la demo: rechaza las claves.** Exigía el prefijo `0x`, que las billeteras suelen omitir al exportar; forge acepta las dos formas, y por eso el deploy había pasado con la misma clave. Ahora la demo también las acepta sin `0x` y con espacios alrededor. Comprobado en el stack local con las claves de Anvil sin `0x`.
   - [ ] **Pendiente:** la corrida de la demo en Sepolia, que corre el autor con sus claves, y su salida en el README.
+- [ ] **Demo en Monad testnet,** por **decisión del autor:** en Sepolia la demo tarda media hora. Diseño en [DESIGN](DESIGN.md#monad-testnet).
+  - **Medido contra el RPC público:** bloques cada 0,3 s, `finalized` 2 bloques detrás de `latest`, `eth_getLogs` de hasta 100 bloques, `TSTORE` y `MCOPY` soportados, y deploy del Escrow por 941.725 de gas, casi lo mismo que en Cancun.
+  - **`docker-compose.monad.yml`:** la misma estructura que el de Sepolia, con la API en el puerto 3002, 10 confirmaciones, `BATCH_SIZE=100`, `HEALTH_MAX_LAG=50` y ventanas de 60 y 120 s. Claves en `.env.monad` ([plantilla](../../.env.monad.example)).
+  - **`deploy.sh`** verifica en Sourcify cuando recibe `SOURCIFY_URL`: en Monad, el de MonadVision, sin API key.
+  - **La demo** ajusta el polling y las esperas con `BLOCK_TIME_MS`, y cada cuenta lleva su propio nonce. En Anvil y en Sepolia se comporta igual que antes.
+  - **Comprobado contra una testnet simulada** (Anvil con `--network monad`, chain id 10143, un bloque por segundo): deploy, un segundo deploy que no hace nada y la demo completa en 3 min 27 s. En el stack local, la demo, lint y typecheck siguen en verde.
+  - [ ] **Pendiente:** el deploy y la demo, que corre el autor con sus claves, y las direcciones y la salida en el README.
 - [x] **README final:**
   - comandos reales verificados
   - curl de ejemplo con output real
@@ -783,7 +790,7 @@ Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose
 | README (cómo correrlo, curl, resumen de decisiones, supuestos y mejoras) y DESIGN (desarrollo) | 12 |
 | Historial de commits que muestre el avance | todas |
 | Outputs de prompts de IA | 0, 12 |
-| Opcional: deploy en una testnet (Sepolia) | 12 |
+| Opcional: deploy en una testnet (Sepolia, Monad testnet) | 12 |
 
 ## Mapeo con los criterios de evaluación
 

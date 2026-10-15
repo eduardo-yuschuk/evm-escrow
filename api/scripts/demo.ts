@@ -4,9 +4,9 @@
 // in time, ends the demo with exit code 1, so CI runs it as a smoke test.
 //
 // On Anvil it sends from Anvil's accounts 0 and 1, mines the blocks the API waits for and moves the
-// chain's time forward to expire an escrow. On a live network (Sepolia, docker-compose.sepolia.yml)
-// the accounts come from SENDER_PRIVATE_KEY and BENEFICIARY_PRIVATE_KEY, the network mines the blocks
-// and the demo waits until the escrow expires.
+// chain's time forward to expire an escrow. On a live network (Sepolia or Monad testnet, with
+// docker-compose.sepolia.yml or docker-compose.monad.yml) the accounts come from SENDER_PRIVATE_KEY and
+// BENEFICIARY_PRIVATE_KEY, the network mines the blocks and the demo waits until the escrow expires.
 //
 // Usage: docker compose run --rm demo
 import { setTimeout as sleep } from "node:timers/promises";
@@ -27,7 +27,7 @@ import {
   type LocalAccount,
   type TransactionReceipt,
 } from "viem";
-import { mnemonicToAccount, privateKeyToAccount } from "viem/accounts";
+import { mnemonicToAccount, nonceManager, privateKeyToAccount } from "viem/accounts";
 import { foundry } from "viem/chains";
 import { z } from "zod";
 
@@ -48,6 +48,8 @@ const envSchema = z.object({
   DEPLOYMENTS_FILE: z.string().min(1),
   /** The API's CONFIRMATIONS: on Anvil, after each transaction the demo mines that many blocks. */
   CONFIRMATIONS: z.coerce.number().int().nonnegative().default(0),
+  /** Off Anvil, the network's time between blocks: Ethereum's 12 s by default. */
+  BLOCK_TIME_MS: z.coerce.number().int().positive().default(12_000),
   /** The API as seen from the host, for the closing hint. */
   HOST_API_URL: z.url().default("http://localhost:3000"),
   /** Required off Anvil. On Anvil, Anvil's accounts 0 and 1 by default. */
@@ -57,12 +59,13 @@ const envSchema = z.object({
 
 /** How long the API may take to reflect a step on Anvil: the indexer polls every second. */
 const WAIT_TIMEOUT_MS = 30_000;
-/** Off Anvil, added per confirmation: a block every 12 s, with room for missed slots. */
-const WAIT_PER_CONFIRMATION_MS = 24_000;
+/** Off Anvil, added per confirmation, in blocks: room for missed slots. */
+const WAIT_BLOCKS_PER_CONFIRMATION = 2;
 const POLL_INTERVAL_MS = 200;
 
-/** How often viem polls the node for receipts: Anvil mines at once, Sepolia every 12 s. */
+/** How often viem polls the node for receipts: Anvil mines at once, a live network once per block. */
 const ANVIL_RPC_POLLING_MS = 100;
+/** The most a live network waits between polls, even with Sepolia's 12 s blocks. */
 const LIVE_RPC_POLLING_MS = 2_000;
 
 /** Anvil's default mnemonic, whose accounts Deploy.s.sol funds. Its keys are public: local only. */
@@ -83,7 +86,7 @@ type Resolution = keyof typeof RESOLUTIONS;
 
 const noActions = { canCancel: false, canConfirm: false, canReject: false, canRecover: false };
 
-function createClient(rpcUrl: string, chainId: number, anvil: boolean) {
+function createClient(rpcUrl: string, chainId: number, pollingInterval: number) {
   return createTestClient({
     // viem checks that the node is on this chain before sending a transaction.
     chain: defineChain({
@@ -94,7 +97,7 @@ function createClient(rpcUrl: string, chainId: number, anvil: boolean) {
     }),
     mode: "anvil",
     transport: http(rpcUrl),
-    pollingInterval: anvil ? ANVIL_RPC_POLLING_MS : LIVE_RPC_POLLING_MS,
+    pollingInterval,
     // The demo mines blocks and reads the head right away: a cached block number would be stale.
     cacheTime: 0,
   })
@@ -131,10 +134,15 @@ function parties(
 ): { sender: Party; beneficiary: Party } {
   const { SENDER_PRIVATE_KEY: senderKey, BENEFICIARY_PRIVATE_KEY: beneficiaryKey } = env;
   if (senderKey && beneficiaryKey) {
+    // The nonce manager never reuses a nonce: right after a receipt, a node behind the endpoint's load
+    // balancer may still answer the previous transaction count.
     return {
-      sender: { account: privateKeyToAccount(senderKey), source: "SENDER_PRIVATE_KEY" },
+      sender: {
+        account: privateKeyToAccount(senderKey, { nonceManager }),
+        source: "SENDER_PRIVATE_KEY",
+      },
       beneficiary: {
-        account: privateKeyToAccount(beneficiaryKey),
+        account: privateKeyToAccount(beneficiaryKey, { nonceManager }),
         source: "BENEFICIARY_PRIVATE_KEY",
       },
     };
@@ -172,7 +180,10 @@ async function setUp(): Promise<Demo> {
   }
   const anvil = deployment.chainId === foundry.id;
   const { sender, beneficiary } = parties(env, anvil);
-  const client = createClient(env.RPC_URL, deployment.chainId, anvil);
+  const pollingInterval = anvil
+    ? ANVIL_RPC_POLLING_MS
+    : Math.min(env.BLOCK_TIME_MS, LIVE_RPC_POLLING_MS);
+  const client = createClient(env.RPC_URL, deployment.chainId, pollingInterval);
   const token = { address: deployment.token, abi: mockErc20Abi } as const;
   const [symbol, decimals] = await Promise.all([
     client.readContract({ ...token, functionName: "symbol" }),
@@ -185,7 +196,9 @@ async function setUp(): Promise<Demo> {
     sender,
     beneficiary,
     deployment,
-    waitTimeoutMs: WAIT_TIMEOUT_MS + (anvil ? 0 : env.CONFIRMATIONS * WAIT_PER_CONFIRMATION_MS),
+    waitTimeoutMs:
+      WAIT_TIMEOUT_MS +
+      (anvil ? 0 : env.CONFIRMATIONS * WAIT_BLOCKS_PER_CONFIRMATION * env.BLOCK_TIME_MS),
     tokens: (whole) => BigInt(whole) * 10n ** BigInt(decimals),
     format: (amount) => `${formatUnits(amount, decimals)} ${symbol}`,
   };
@@ -435,7 +448,7 @@ async function main(): Promise<void> {
 
   for (const { account, source } of [sender, beneficiary]) {
     if ((await client.getBalance({ address: account.address })) === 0n) {
-      throw new Error(`${account.address} (${source}) has no ETH to pay for gas`);
+      throw new Error(`${account.address} (${source}) has no native currency to pay for gas`);
     }
   }
 

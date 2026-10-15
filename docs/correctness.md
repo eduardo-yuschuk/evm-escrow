@@ -109,4 +109,4 @@ Las ventanas se cuentan desde la creación. Cada límite se prueba un segundo an
 | Ejemplos de `curl` para probar los endpoints | [README](../README.md#ejemplos-http) |
 | Historial de commits que muestre el avance | `git log`: un commit por paso lógico |
 | Outputs de prompts de IA | [`docs/ai/README.md`](ai/README.md) |
-| Opcional: deploy en una testnet | Sepolia, ver [README](../README.md#sepolia) |
+| Opcional: deploy en una testnet | Sepolia y Monad testnet, ver [README](../README.md#sepolia) |

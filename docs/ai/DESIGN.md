@@ -58,8 +58,10 @@ docker/             Dockerfile de Slither, init de Postgres
 docs/               hallazgos de Slither, gas report, outputs de IA
 docker-compose.yml
 docker-compose.sepolia.yml   el contrato deployado en Sepolia: indexador, deploy y demo
+docker-compose.monad.yml     lo mismo en Monad testnet
 .env.example        overrides opcionales (puertos, confirmaciones); todo tiene default
 .env.sepolia.example         claves del deploy y la demo en Sepolia, en .env.sepolia (ignorado)
+.env.monad.example           claves del deploy y la demo en Monad testnet, en .env.monad (ignorado)
 ```
 
 ### Servicios de compose
@@ -110,7 +112,7 @@ Los servicios de herramientas usan `profiles`, así que `docker compose up` no l
 - **Gas.** Cada `forge test` reescribe `contracts/snapshots/EscrowGasTest.json` con el gas de cada operación; los cambios aparecen en el diff. `forge coverage` no lo reescribe, porque compila sin optimizador. Ver [`docs/gas.md`](../gas.md).
 - **Dependencias.** La primera vez, o cuando cambia el lockfile, el entrypoint instala las dependencias desde el contenedor en `api/node_modules/` y `contracts/dependencies/`. Las dos carpetas están ignoradas por git.
 - **Permisos.** Los servicios `forge` y `npm` arrancan como root y el entrypoint baja, con `setpriv`, al dueño del código montado. Así los archivos generados quedan del usuario del host con Docker clásico, rootless o Docker Desktop, sin configurar nada.
-- **Demo** ([`api/scripts/demo.ts`](../../api/scripts/demo.ts)). Manda las transacciones con viem desde las cuentas 0 y 1 de Anvil, que el deploy ya fondeó, así que no necesita mintear. Fuera de Anvil, en [Sepolia](#sepolia), usa las cuentas de `SENDER_PRIVATE_KEY` y `BENEFICIARY_PRIVATE_KEY` y mintea los tokens que le faltan.
+- **Demo** ([`api/scripts/demo.ts`](../../api/scripts/demo.ts)). Manda las transacciones con viem desde las cuentas 0 y 1 de Anvil, que el deploy ya fondeó, así que no necesita mintear. Fuera de Anvil, en [Sepolia](#sepolia) o [Monad testnet](#monad-testnet), usa las cuentas de `SENDER_PRIVATE_KEY` y `BENEFICIARY_PRIVATE_KEY` y mintea los tokens que le faltan.
   - El vencimiento se simula con `evm_increaseTime` (el `ttl` del archivo de deploy) y `evm_mine`: la API informa `ExpiredRecoverable` mientras el contrato sigue diciendo `Pending`.
   - Cada escrow se crea justo antes de su acción, y el de vencimiento va al final, porque avanzar el tiempo del nodo afecta a todos los escrows a la vez.
   - **Smoke test.** Después de cada transacción espera a que la API la refleje: que exista el escrow, que tenga `resolvedTx` o que su `now` haya alcanzado el bloque nuevo. Recién ahí compara la vista completa, así un valor equivocado falla enseguida, con cada campo distinto, y no al vencer la espera de 30 s. También verifica que los fondos lleguen a quien corresponde. Cualquier diferencia termina con código 1.
@@ -285,6 +287,30 @@ En una testnet no se puede adelantar el reloj del nodo, así que para ver un ven
 - **Deploy:** el mismo `deploy.sh` del stack local, con `--verify` si hay API key de Etherscan, y el mismo chequeo de idempotencia: si el archivo ya describe Sepolia, no deploya.
   - **El gas lo estima el nodo** (`--skip-simulation`, que hace que forge use `eth_estimateGas`). La simulación propia de forge cobra los costos de gas del target de compilación, `cancun`, y Sepolia ya cobra mucho más por crear un contrato: 6.545.373 de gas para el Escrow en lugar de 933.537. El primer deploy real falló por eso, con las dos creaciones sin gas. Se verificó contra Sepolia que el hash calculado del header (`vm.getRawBlockHeader`) coincide con el real, que es lo que compara el guard de cadena.
 - **Demo:** la misma de Anvil, en modo red real. Con 12 confirmaciones cada paso tarda unos 3 minutos, y la corrida completa, cerca de media hora.
+
+### Monad testnet
+
+Es la misma demo en vivo que en [Sepolia](#sepolia), pero tarda minutos y no media hora: Monad hace un bloque cada 0,3 s y lo finaliza dos bloques después. Está en [`docker-compose.monad.yml`](../../docker-compose.monad.yml), con la misma estructura que el de Sepolia, su propia base y la API en el puerto 3002.
+
+- **Medido contra el RPC público** (`testnet-rpc.monad.xyz`, en octubre de 2026):
+  - 1.000 bloques en 301 s
+  - el tag `finalized` va 2 bloques detrás de `latest`
+  - `eth_getLogs` acepta hasta 100 bloques por llamada
+  - `TSTORE`, `TLOAD` y `MCOPY` funcionan, así que el bytecode compilado para `cancun` corre tal cual
+  - el deploy cuesta 941.725 de gas el Escrow y 514.233 el token, casi lo mismo que en Cancun
+- **Indexador:**
+  - `CONFIRMATIONS=10`, unos 3 segundos: 2 para la finalidad, y el resto de margen por si un nodo detrás del balanceador del endpoint va atrasado.
+  - `BATCH_SIZE=100`, el límite del endpoint.
+  - `HEALTH_MAX_LAG=50`: entre dos polls llegan unos 3 bloques, y con el default de 10 una llamada lenta haría ver como atrasado a un indexador sano.
+- **Ventanas:** 1 minuto para cancelar y 2 de TTL. La de cancelación supera con holgura el atraso de la API y alcanza para que la demo cree y cancele un escrow.
+- **Verificación sin API key,** en el Sourcify de MonadVision: `deploy.sh` usa `--verifier sourcify` cuando recibe `SOURCIFY_URL`.
+- **Claves en `.env.monad`,** ignorado por git, como en Sepolia. Para compose el archivo es opcional, así que las claves también pueden venir del shell.
+- **Monad cobra el límite de gas, no lo usado.** El deploy paga el margen de 1,3 que forge le suma a `eth_estimateGas`: unos 0,2 MON a 102 gwei, el precio de octubre de 2026. La demo usa la estimación del nodo, sin margen.
+- **Demo:**
+  - `BLOCK_TIME_MS=300` fija cada cuánto consulta los recibos y cuánto espera por confirmación. En Sepolia, con el default de 12 s, siguen siendo 2 s y 24 s.
+  - Cada cuenta lleva su propio contador de nonce (el `nonceManager` de viem): justo después de un recibo, un nodo atrasado detrás del balanceador podría devolver el nonce anterior.
+- **Comprobado contra una testnet simulada:** Anvil con `--network monad`, el chain id 10143 y un bloque por segundo. El deploy anduvo, un segundo deploy no hizo nada y la demo completa salió con código 0 en 3 min 27 s.
+- **No es un deploy permanente:** Monad testnet se reinició desde génesis en diciembre de 2025. Si vuelve a pasar, el guard de cadena hace abortar a la API (`RESET_ON_CHAIN_MISMATCH=false`), y hay que borrar el archivo de deploy y deployar de nuevo.
 
 ## API e indexador
 
@@ -505,7 +531,7 @@ Cada una está analizada en la [revisión de seguridad](../security.md). Las de 
 | **Fuzz + invariantes** | Ataca directo el 30 % de seguridad. Un handler de Foundry ejecuta secuencias aleatorias de create, cancel, confirm, reject, recover y `warp`, con varios tokens incluidos uno fee-on-transfer. Invariantes: `balanceOf(token) >= Σ pendientes`, contabilidad exacta con donaciones, un estado final nunca cambia, lo pagado nunca supera lo depositado e ids consistentes con `escrowCount`. Además, cada llamada se compara con un modelo de referencia. |
 | **Fee-on-transfer** | Es necesario para que "cualquier ERC-20" sea seguro (ver decisión 7). |
 | **Slither + CI** | Slither corre en CI y sus hallazgos se comentan en [`docs/slither.md`](../slither.md), incluido lo que Slither no puede ver (reentrada a través del assembly de `SafeERC20`). GitHub Actions corre exactamente los mismos `docker compose run …` documentados en el [README](../../README.md#pruebas): fmt, tests, snapshots de gas, Slither, lint, typecheck, tests de la API y el ABI generado al día, más un smoke test con la demo. Si pasa en CI, pasa en cualquier máquina con Docker. |
-| **Deploy en Sepolia** | Muestra el vencimiento en vivo, donde no se puede adelantar el reloj, y el indexador contra una red real con confirmaciones. El contrato está verificado en Etherscan, y cualquiera puede indexarlo sin claves. Ver [Sepolia](#sepolia). |
+| **Deploy en Sepolia** | Muestra el vencimiento en vivo, donde no se puede adelantar el reloj, y el indexador contra una red real con confirmaciones. El contrato está verificado en Etherscan, y cualquiera puede indexarlo sin claves. Ver [Sepolia](#sepolia). En [Monad testnet](#monad-testnet), la misma demo tarda minutos en lugar de media hora. |
 | **Gas report + storage** | Gas por operación medido y verificado contra recibos de Anvil, `.gas-snapshot` para regresiones y 7 variantes de optimización medidas con su veredicto, en [`docs/gas.md`](../gas.md). El layout de 4 slots y los deadlines derivados están justificados en [Storage](#storage). |
 
 Se descartaron:

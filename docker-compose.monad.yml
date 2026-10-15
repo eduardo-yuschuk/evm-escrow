@@ -1,0 +1,140 @@
+name: evm-escrow-monad
+
+# The Escrow on Monad testnet, with short windows so that an escrow expires during the demo. Monad
+# makes a block every ~0.3 s and finalizes it two blocks later, so the demo takes a few minutes
+# instead of Sepolia's half hour. A separate compose project from the local stack and from Sepolia:
+# its own database and port.
+#
+#   docker compose -f docker-compose.monad.yml run --rm deploy   deploys and verifies (.env.monad)
+#   docker compose -f docker-compose.monad.yml up --build        indexes the deployed contract
+#   docker compose -f docker-compose.monad.yml run --rm demo     runs the demo (.env.monad)
+#
+# The deployment is contracts/deployments/10143.json. The keys of deploy and demo go in .env.monad
+# (see .env.monad.example), and the overrides in .env.
+
+# A public endpoint by default (QuickNode's, 50 requests per second), so that indexing needs no
+# account anywhere.
+x-rpc-url: &rpc-url ${MONAD_RPC_URL:-https://testnet-rpc.monad.xyz}
+
+services:
+  # Not published: docker compose -f docker-compose.monad.yml exec postgres psql -U escrow escrow
+  postgres:
+    image: postgres:17.11-alpine3.24
+    environment:
+      POSTGRES_USER: escrow
+      POSTGRES_PASSWORD: escrow
+      POSTGRES_DB: escrow
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP: while the init scripts run, Postgres only listens on its Unix socket.
+      test: [CMD, pg_isready, --host, 127.0.0.1, --username, escrow, --dbname, escrow]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+
+  # Indexer and HTTP API in one process, against Monad testnet.
+  api:
+    build:
+      context: ./api
+      target: runtime
+    image: evm-escrow/api:runtime
+    environment:
+      RPC_URL: *rpc-url
+      DATABASE_URL: postgres://escrow:escrow@postgres:5432/escrow
+      DEPLOYMENTS_FILE: /deployments/10143.json
+      # Monad finalizes a block once two more are on top (the RPC's finalized tag is latest - 2). The
+      # rest is margin for a node behind the endpoint's load balancer, and costs about 2 seconds.
+      CONFIRMATIONS: ${MONAD_CONFIRMATIONS:-10}
+      # The public endpoint answers eth_getLogs for 100 blocks at most.
+      BATCH_SIZE: ${MONAD_BATCH_SIZE:-100}
+      # About 3 blocks arrive between two polls, and one slow RPC call adds a few more: the default
+      # of 10 would report a healthy indexer as lagging.
+      HEALTH_MAX_LAG: ${MONAD_HEALTH_MAX_LAG:-50}
+      # A testnet does not restart on its own: another chain or contract in the database is an
+      # error, not a reset.
+      RESET_ON_CHAIN_MISMATCH: "false"
+      LOG_LEVEL: ${LOG_LEVEL:-}
+    volumes:
+      - ./contracts/deployments:/deployments:ro
+    ports:
+      - 127.0.0.1:${MONAD_API_PORT:-3002}:3000
+    healthcheck:
+      # The runtime image has no curl: Node's fetch. /health answers 503 while the indexer lags.
+      test:
+        - CMD
+        - node
+        - --eval
+        - "fetch('http://127.0.0.1:3000/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 2s
+      timeout: 5s
+      retries: 3
+      # The first start indexes every block since the deployment, 100 per call.
+      start_period: 600s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # One-shot ("deploy" profile): deploys the Escrow and a test token with short windows, verifies
+  # them on MonadVision's Sourcify (no key needed) and writes contracts/deployments/10143.json. Like
+  # the local deployer, it skips the deployment when that file already describes the chain: delete
+  # the file to deploy again.
+  deploy:
+    profiles: [deploy]
+    build:
+      context: ./contracts
+      target: deps
+    image: evm-escrow/contracts:deps
+    # Starts as root; the entrypoint drops to the owner of ./contracts.
+    user: root
+    # script/deploy.sh reads the key from PRIVATE_KEY: the demo's sender deploys.
+    command:
+      - sh
+      - -c
+      - 'PRIVATE_KEY="$${SENDER_PRIVATE_KEY:?set it in .env.monad}" exec script/deploy.sh'
+    # Optional, so that the keys can also come from the shell (run -e).
+    env_file:
+      - path: .env.monad
+        required: false
+    environment:
+      RPC_URL: *rpc-url
+      SOURCIFY_URL: https://sourcify-api-monad.blockvision.org/
+      # Seconds. The cancel window has to outlast the API's lag (CONFIRMATIONS blocks plus a poll),
+      # and the demo has to create and cancel an escrow within it.
+      ESCROW_CANCEL_WINDOW: ${MONAD_CANCEL_WINDOW:-60}
+      ESCROW_TTL: ${MONAD_TTL:-120}
+      DEPLOY_MOCK_TOKEN: "true"
+    volumes:
+      - ./contracts:/app
+
+  # The end-to-end demo against Monad testnet ("demo" profile): it waits for the confirmations and
+  # for the expiry in real time, a few minutes in all.
+  demo:
+    profiles: [demo]
+    build:
+      context: ./api
+      target: dev
+    image: evm-escrow/api:dev
+    # Rebuilt on every run, so it runs the current script without mounting ./api.
+    pull_policy: build
+    command: [npm, run, --silent, demo]
+    env_file:
+      - path: .env.monad
+        required: false
+    environment:
+      RPC_URL: *rpc-url
+      API_URL: http://api:3000
+      DEPLOYMENTS_FILE: /deployments/10143.json
+      CONFIRMATIONS: ${MONAD_CONFIRMATIONS:-10}
+      # How often the demo polls the node for receipts, and how long it waits per confirmation.
+      BLOCK_TIME_MS: 300
+      # Only printed, for curl from the host.
+      HOST_API_URL: http://localhost:${MONAD_API_PORT:-3002}
+    volumes:
+      - ./contracts/deployments:/deployments:ro
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:

@@ -6,6 +6,8 @@ contracts/dependencies/
 contracts/deployments/*
 # The Sepolia deployment is public, and the API indexes it from this file (docker-compose.sepolia.yml).
 !contracts/deployments/11155111.json
+# The Monad testnet deployment, likewise (docker-compose.monad.yml).
+!contracts/deployments/10143.json
 
 # Node
 api/node_modules/
@@ -15,5 +17,6 @@ api/coverage/
 # Local environment
 .env
 .env.sepolia
+.env.monad
 CHALLENGE.md
 .vscode/

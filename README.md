@@ -9,7 +9,7 @@ Escrow de tokens ERC-20 en Solidity, más una API/indexador en TypeScript que pr
 - **Contrato** (`contracts/`): un solo contrato gestiona muchos escrows. El enviador deposita tokens y el beneficiario los confirma o rechaza; el enviador puede cancelar en las primeras 2 horas y recuperar los fondos después de 7 días. Foundry, Solidity 0.8.37 y OpenZeppelin.
 - **API e indexador** (`api/`): Node.js, TypeScript y viem. Indexa los eventos en Postgres y expone el estado de cada escrow por HTTP.
 - **Todo corre con Docker Compose:** nodo local (Anvil), deploy, base de datos, API, tests, análisis estático y demo.
-- **También en Sepolia,** con ventanas cortas para ver un vencimiento en vivo: ver [Sepolia](#sepolia).
+- **También en testnets,** con ventanas cortas para ver un vencimiento en vivo: ver [Sepolia](#sepolia) y [Monad testnet](#monad-testnet), donde la demo tarda minutos en lugar de media hora.
 
 ## Documentación
 
@@ -251,6 +251,18 @@ La API espera 12 confirmaciones, así que refleja la cadena con unos 2,5 minutos
 3. Deployar y verificar: `docker compose -f docker-compose.sepolia.yml run --rm deploy`. Las ventanas se cambian con `SEPOLIA_CANCEL_WINDOW` y `SEPOLIA_TTL` en `.env`.
 4. Correr la demo: `docker compose -f docker-compose.sepolia.yml run --rm demo`. Es la misma de Anvil, pero espera las confirmaciones y el vencimiento en tiempo real: tarda cerca de media hora.
 
+## Monad testnet
+
+En Sepolia la demo tarda cerca de media hora, porque cada paso espera 12 bloques de 12 s. Monad testnet hace un bloque cada 0,3 s y lo finaliza dos bloques después, así que la misma demo tarda unos 3 minutos. Todo está en [`docker-compose.monad.yml`](docker-compose.monad.yml), otro proyecto aparte, con su propia base y la API en el puerto 3002. El diseño está en [DESIGN](docs/ai/DESIGN.md#monad-testnet).
+
+Hacen falta dos cuentas con MON de testnet, que da el [faucet](https://faucet.monad.xyz); sirven las mismas claves de Sepolia. No hace falta API key: los contratos se verifican en el Sourcify de MonadVision.
+
+1. Copiar [`.env.monad.example`](.env.monad.example) a `.env.monad`, que git ignora, y completar las claves.
+2. Deployar y verificar: `docker compose -f docker-compose.monad.yml run --rm deploy`. Escribe `contracts/deployments/10143.json`. Las ventanas son de 1 minuto para cancelar y 2 de TTL, y se cambian con `MONAD_CANCEL_WINDOW` y `MONAD_TTL` en `.env`.
+3. Correr la demo: `docker compose -f docker-compose.monad.yml run --rm demo`. Si la API no está corriendo, la levanta.
+
+Para indexar sin correr la demo: `docker compose -f docker-compose.monad.yml up --build` y `curl "http://localhost:3002/escrows?limit=4"`. La API espera 10 confirmaciones, unos 3 segundos.
+
 ## Decisiones de diseño
 
 Una línea por decisión; el desarrollo de cada una está en [DESIGN](docs/ai/DESIGN.md), y las ambigüedades del enunciado, numeradas en su [tabla de decisiones](docs/ai/DESIGN.md#decisiones-sobre-ambigüedades-del-enunciado).
@@ -272,7 +284,7 @@ Una línea por decisión; el desarrollo de cada una está en [DESIGN](docs/ai/DE
 **API e indexador**
 - **Polling con `eth_getLogs` y checkpoint transaccional,** en lugar de una suscripción WebSocket (decisión 18).
 - **Idempotencia por `(tx_hash, log_index)`** y un proyector puro que repite sus guardas en SQL ([Indexador](docs/ai/DESIGN.md#indexador)).
-- **Reorgs: N confirmaciones,** 0 en Anvil y 12 en Sepolia (decisión 19).
+- **Reorgs: N confirmaciones,** 0 en Anvil, 12 en Sepolia y 10 en Monad testnet (decisión 19).
 - **Guard de cadena:** detecta un Anvil reiniciado y reindexa, o aborta si se configuró así ([Indexador](docs/ai/DESIGN.md#indexador)).
 - **El reloj es el timestamp del último bloque,** no el del servidor (decisión 17).
 - **`ExpiredRecoverable` es el estado derivado** de un `Pending` vencido; `Expired` queda para el final on-chain (decisión 6).
@@ -289,6 +301,7 @@ Una línea por decisión; el desarrollo de cada una está en [DESIGN](docs/ai/DE
 - **CI con los mismos comandos del README,** sin instalar nada en el runner ([Ejecución y tests](docs/ai/DESIGN.md#ejecución-y-tests)).
 - **La demo es un smoke test:** verifica cada paso contra la API y sale con código 1 si algo no coincide ([Ejecución y tests](docs/ai/DESIGN.md#ejecución-y-tests)).
 - **Sepolia con ventanas de 5 y 10 minutos,** archivo de deploy versionado y claves fuera del repo ([Sepolia](docs/ai/DESIGN.md#sepolia)).
+- **Monad testnet para una demo de minutos,** con ventanas de 1 y 2 minutos y verificación sin API key ([Monad testnet](docs/ai/DESIGN.md#monad-testnet)).
 
 ## Supuestos
 

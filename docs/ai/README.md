@@ -489,3 +489,22 @@ Antes de empezar, la IA hizo cuatro preguntas, porque cambiaban el alcance y el 
   - la demo pasa con las claves de Anvil sin `0x`, una de ellas con espacios
   - con claves mal formadas, falla con el mensaje nuevo
   - lint y typecheck en verde
+
+## 34. Monad testnet
+
+> sepolia es muy lenta, podemos usar monad testnet. create los archivos para una prueba sobre monad testnet
+
+**Output:** un tercer proyecto de compose, [`docker-compose.monad.yml`](../../docker-compose.monad.yml), con la misma estructura que el de Sepolia. El diseño está en [DESIGN](DESIGN.md#monad-testnet).
+- **Primero se midió la red,** contra el RPC público:
+  - un bloque cada 0,3 s, y `finalized` 2 bloques detrás de `latest`
+  - `eth_getLogs` limitado a 100 bloques por llamada
+  - `TSTORE`, `TLOAD` y `MCOPY` funcionan
+  - el deploy del Escrow cuesta 941.725 de gas, casi lo mismo que en Cancun
+  - el sender de Sepolia ya tiene 5 MON en esa red
+- **Configuración:** 10 confirmaciones (unos 3 s), `BATCH_SIZE=100`, `HEALTH_MAX_LAG=50`, ventanas de 60 y 120 s, y la API en el puerto 3002. Las claves van en `.env.monad`, ignorado por git, con su plantilla [`.env.monad.example`](../../.env.monad.example).
+- **Código:**
+  - `deploy.sh` verifica en el Sourcify de MonadVision, sin API key.
+  - La demo toma `BLOCK_TIME_MS` para el polling y las esperas, y usa el `nonceManager` de viem para no repetir un nonce si un nodo atrasado contesta.
+  - En Anvil y en Sepolia nada cambia.
+- **Comprobado contra una testnet simulada** (Anvil con `--network monad` y el chain id 10143): deploy, un segundo deploy que no hace nada y la demo completa, con código 0. En el stack local, la demo, lint y typecheck siguen en verde. La simulación se borró: archivo de deploy, base y contenedores.
+- **Lo que falta:** el deploy y la demo reales, que corre el autor con sus claves.
