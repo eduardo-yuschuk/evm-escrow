@@ -22,8 +22,13 @@ RUN chmod -R a+rwX /home/foundry && chown -R foundry:foundry /app
 ENTRYPOINT ["forge-entrypoint"]
 CMD ["forge", "build"]
 
-# build: compiled contracts, no mounted code. Used by the deployer.
+# build: compiled contracts and the deploy script, no mounted code. Used by the deployer.
+# Only what the deployment needs, so that changing the tests does not rebuild it.
 FROM deps AS build
-COPY --chown=foundry:foundry . .
+COPY --chown=foundry:foundry src ./src
+COPY --chown=foundry:foundry script ./script
+# Deploy.s.sol deploys this token on Anvil.
+COPY --chown=foundry:foundry test/mocks/MockERC20.sol ./test/mocks/
 USER foundry
-RUN forge build
+# deployments/ is where the deployer mounts its volume: a new volume takes the owner from the image.
+RUN forge build && mkdir deployments
