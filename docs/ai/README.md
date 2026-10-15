@@ -519,3 +519,16 @@ Antes de empezar, la IA hizo cuatro preguntas, porque cambiaban el alcance y el 
 - **D se ve como `ExpiredRecoverable` apenas vence,** aunque la API indexa con 12 bloques de atraso, porque su reloj es el último bloque. El `recoverExpired` salió 12 s después del vencimiento.
 
 Tiempos medidos en la cadena: unos 29 minutos en total y 156 s por paso. DESIGN decía "unos 3 minutos" por paso y pasó a decir "unos 2,5". La fase 12 del [ROADMAP](ROADMAP.md) marca el pendiente como hecho.
+
+## 36. Monad testnet: deploy y demo
+
+> lista la prueba de monad, te pego el output de la demo, el deploy lo hice antes: (salida de `docker compose -f docker-compose.monad.yml run --rm demo`: los cuatro caminos y `Every state matched`)
+
+**Output:** la IA comprobó el deploy en la cadena y agregó al README las direcciones y la salida de la demo.
+- **Deploy:** `Escrow` en `0x168f4F3b56166B772691253338C7e75eD200Df29` y el token en `0x9a3b2D1C29c049F65875b6DfA0Cf869485625055`.
+  - Los dos están verificados en el Sourcify de MonadVision, con `exact_match`.
+  - Las ventanas son 60 y 120 s, y el `startBlockHash` coincide con el hash real.
+  - El token tiene la misma dirección que el Escrow de Sepolia, porque los deployó la misma cuenta con el mismo nonce. El README lo aclara.
+- **Costo:** 0,193 MON. Cada recibo informa como gas usado el límite completo, 1,3 veces la estimación del nodo, y así se confirmó que Monad cobra el límite.
+- **Demo:** 159 s del `mint` al `recoverExpired`, contra 29 minutos en Sepolia. Cada paso tardó unos 6 s.
+- **Monadscan no los muestra como verificados,** porque solo se verificaron en Sourcify.

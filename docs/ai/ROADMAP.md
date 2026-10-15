@@ -761,13 +761,18 @@ Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose
     - Tardó unos 29 minutos: del `mint` (bloque 11.922.402) al `recoverExpired` hay 1.572 s, más la espera de las confirmaciones del último paso. Cada paso, de una transacción a la siguiente, tardó 156 s.
     - Los escrows 1 a 3 son anteriores, de otra cuenta (`0x2025…311a`). El sender ya tenía 8 MOCK, así que la demo minteó solo 992.
     - D se mostró como `ExpiredRecoverable` apenas la cabeza pasó el vencimiento, porque el reloj de la API es el último bloque y no el indexado: el `recoverExpired` salió 12 s después del vencimiento.
-- [ ] **Demo en Monad testnet,** por **decisión del autor:** en Sepolia la demo tarda media hora. Diseño en [DESIGN](DESIGN.md#monad-testnet).
+- [x] **Demo en Monad testnet,** por **decisión del autor:** en Sepolia la demo tarda media hora. Diseño en [DESIGN](DESIGN.md#monad-testnet).
   - **Medido contra el RPC público:** bloques cada 0,3 s, `finalized` 2 bloques detrás de `latest`, `eth_getLogs` de hasta 100 bloques, `TSTORE` y `MCOPY` soportados, y deploy del Escrow por 941.725 de gas, casi lo mismo que en Cancun.
   - **`docker-compose.monad.yml`:** la misma estructura que el de Sepolia, con la API en el puerto 3002, 10 confirmaciones, `BATCH_SIZE=100`, `HEALTH_MAX_LAG=50` y ventanas de 60 y 120 s. Claves en `.env.monad` ([plantilla](../../.env.monad.example)).
   - **`deploy.sh`** verifica en Sourcify cuando recibe `SOURCIFY_URL`: en Monad, el de MonadVision, sin API key.
   - **La demo** ajusta el polling y las esperas con `BLOCK_TIME_MS`, y cada cuenta lleva su propio nonce. En Anvil y en Sepolia se comporta igual que antes.
   - **Comprobado contra una testnet simulada** (Anvil con `--network monad`, chain id 10143, un bloque por segundo): deploy, un segundo deploy que no hace nada y la demo completa en 3 min 27 s. En el stack local, la demo, lint y typecheck siguen en verde.
-  - [ ] **Pendiente:** el deploy y la demo, que corre el autor con sus claves, y las direcciones y la salida en el README.
+  - [x] **Deploy y demo en la red real: OK,** los corrió el autor. Direcciones y salida en el [README](../../README.md#monad-testnet).
+    - `Escrow` en `0x168f4F3b56166B772691253338C7e75eD200Df29` y el token en `0x9a3b2D1C29c049F65875b6DfA0Cf869485625055`, los dos verificados en el Sourcify de MonadVision con `exact_match`. El token tiene la misma dirección que el Escrow de Sepolia: misma cuenta y mismo nonce (3).
+    - En la cadena: las ventanas son 60 y 120 s, y `startBlockHash` coincide con el hash real del bloque 71.338.477.
+    - El deploy costó 0,193 MON. El gas usado de cada recibo es el límite completo, 1,3 veces `eth_estimateGas` (1.224.242 el Escrow y 668.502 el token): Monad cobra el límite.
+    - La demo: los cuatro caminos con código 0, en 159 s del `mint` al `recoverExpired`. Cada paso tardó unos 6 s, y D se recuperó 3 s después de vencer.
+    - Monadscan no los muestra como verificados: solo se verificaron en Sourcify, que es lo que muestra MonadVision.
 - [x] **README final:**
   - comandos reales verificados
   - curl de ejemplo con output real

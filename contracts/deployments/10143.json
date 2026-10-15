@@ -1,0 +1,9 @@
+{
+  "cancelWindow": 60,
+  "chainId": 10143,
+  "escrow": "0x168f4F3b56166B772691253338C7e75eD200Df29",
+  "startBlock": 71338477,
+  "startBlockHash": "0xf8bdc7dc9161a1353c7105cfd1f4c52e10b76f5fce5e08f5cce28ade7b65e935",
+  "token": "0x9a3b2D1C29c049F65875b6DfA0Cf869485625055",
+  "ttl": 120
+}

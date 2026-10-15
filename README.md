@@ -284,15 +284,57 @@ Every state matched. The full views, from the host:
 
 ## Monad testnet
 
-En Sepolia la demo tarda cerca de media hora, porque cada paso espera 12 bloques de 12 s. Monad testnet hace un bloque cada 0,3 s y lo finaliza dos bloques después, así que la misma demo tarda unos 3 minutos. Todo está en [`docker-compose.monad.yml`](docker-compose.monad.yml), otro proyecto aparte, con su propia base y la API en el puerto 3002. El diseño está en [DESIGN](docs/ai/DESIGN.md#monad-testnet).
+En Sepolia la demo tarda cerca de media hora, porque cada paso espera 12 bloques de 12 s. Monad testnet hace un bloque cada 0,3 s y lo finaliza dos bloques después, así que la misma demo tarda menos de 3 minutos. Todo está en [`docker-compose.monad.yml`](docker-compose.monad.yml), otro proyecto aparte, con su propia base y la API en el puerto 3002. El diseño está en [DESIGN](docs/ai/DESIGN.md#monad-testnet).
 
-Hacen falta dos cuentas con MON de testnet, que da el [faucet](https://faucet.monad.xyz); sirven las mismas claves de Sepolia. No hace falta API key: los contratos se verifican en el Sourcify de MonadVision.
+| Contrato | Dirección, verificada en MonadVision (Sourcify) |
+| --- | --- |
+| `Escrow` (ventanas de 60 y 120 s) | [`0x168f4F3b56166B772691253338C7e75eD200Df29`](https://testnet.monadvision.com/address/0x168f4F3b56166B772691253338C7e75eD200Df29) |
+| Token de prueba `MOCK`, con mint abierto | [`0x9a3b2D1C29c049F65875b6DfA0Cf869485625055`](https://testnet.monadvision.com/address/0x9a3b2D1C29c049F65875b6DfA0Cf869485625055) |
+
+El token tiene la misma dirección que el `Escrow` de Sepolia: los deployó la misma cuenta con el mismo nonce, y la dirección de un contrato depende solo de esos dos datos. El archivo de deploy es [`contracts/deployments/10143.json`](contracts/deployments/10143.json).
+
+**Indexar el contrato deployado** no necesita claves:
+
+```bash
+docker compose -f docker-compose.monad.yml up --build
+curl "http://localhost:3002/escrows?limit=4"
+```
+
+La API espera 10 confirmaciones, unos 3 segundos.
+
+**Deploy y demo propios.** Hacen falta dos cuentas con MON de testnet, que da el [faucet](https://faucet.monad.xyz); sirven las mismas claves de Sepolia. No hace falta API key: los contratos se verifican en el Sourcify de MonadVision. Para correr la demo contra el contrato ya deployado alcanzan los pasos 1 y 4:
 
 1. Copiar [`.env.monad.example`](.env.monad.example) a `.env.monad`, que git ignora, y completar las claves.
-2. Deployar y verificar: `docker compose -f docker-compose.monad.yml run --rm deploy`. Escribe `contracts/deployments/10143.json`. Las ventanas son de 1 minuto para cancelar y 2 de TTL, y se cambian con `MONAD_CANCEL_WINDOW` y `MONAD_TTL` en `.env`.
-3. Correr la demo: `docker compose -f docker-compose.monad.yml run --rm demo`. Si la API no está corriendo, la levanta.
+2. Borrar `contracts/deployments/10143.json`: el deploy no se repite mientras ese archivo describa Monad testnet.
+3. Deployar y verificar: `docker compose -f docker-compose.monad.yml run --rm deploy`. Cuesta unos 0,2 MON. Las ventanas son de 1 minuto para cancelar y 2 de TTL, y se cambian con `MONAD_CANCEL_WINDOW` y `MONAD_TTL` en `.env`.
+4. Correr la demo: `docker compose -f docker-compose.monad.yml run --rm demo`. Si la API no está corriendo, la levanta.
 
-Para indexar sin correr la demo: `docker compose -f docker-compose.monad.yml up --build` y `curl "http://localhost:3002/escrows?limit=4"`. La API espera 10 confirmaciones, unos 3 segundos.
+Salida de la corrida contra el contrato deployado. Del `mint` al `recoverExpired` pasaron 159 s, y cada paso tardó unos 6 s; casi todo el resto es la espera del vencimiento de D:
+
+```
+Escrow demo: API http://api:3000, chain 10143
+  escrow       0x168f4F3b56166B772691253338C7e75eD200Df29
+  token        0x9a3b2D1C29c049F65875b6DfA0Cf869485625055
+  sender       0x347b7762aaA574fA1c38E4464F8Bc72CdA3Ca87b  SENDER_PRIVATE_KEY
+  beneficiary  0x7651987FB928ce45AcFB3b6b3f1C0ED498fb2844  BENEFICIARY_PRIVATE_KEY
+  windows      cancel 1 min, expiry 2 min
+Each step waits for 10 confirmations, and D waits until it expires: this takes a while.
+
+mint 1000 MOCK
+approve 1000 MOCK
+A  create 100 MOCK   #1   Pending             can cancel, confirm, reject
+   confirm           #1   Released            100 MOCK to the beneficiary
+B  create 200 MOCK   #2   Pending             can cancel, confirm, reject
+   reject            #2   Rejected            200 MOCK back to the sender
+C  create 300 MOCK   #3   Pending             can cancel, confirm, reject
+   cancel            #3   CancelledBySender   300 MOCK back to the sender
+D  create 400 MOCK   #4   Pending             can cancel, confirm, reject
+   wait for expiry   #4   ExpiredRecoverable  on-chain Pending, can recover
+   recoverExpired    #4   Expired             400 MOCK back to the sender
+
+Every state matched. The full views, from the host:
+  curl "http://localhost:3002/escrows?sender=0x347b7762aaA574fA1c38E4464F8Bc72CdA3Ca87b&limit=4"
+```
 
 ## Decisiones de diseño
 

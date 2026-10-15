@@ -310,6 +310,10 @@ Es la misma demo en vivo que en [Sepolia](#sepolia), pero tarda minutos y no med
   - `BLOCK_TIME_MS=300` fija cada cuánto consulta los recibos y cuánto espera por confirmación. En Sepolia, con el default de 12 s, siguen siendo 2 s y 24 s.
   - Cada cuenta lleva su propio contador de nonce (el `nonceManager` de viem): justo después de un recibo, un nodo atrasado detrás del balanceador podría devolver el nonce anterior.
 - **Comprobado contra una testnet simulada:** Anvil con `--network monad`, el chain id 10143 y un bloque por segundo. El deploy anduvo, un segundo deploy no hizo nada y la demo completa salió con código 0 en 3 min 27 s.
+- **En la red real, todo anduvo al primer intento** (direcciones y salida en el [README](../../README.md#monad-testnet)):
+  - Los dos contratos quedaron verificados en Sourcify con `exact_match`.
+  - El deploy costó 0,193 MON. Los recibos informan como gas usado el límite completo, 1,3 veces la estimación: 1.224.242 el Escrow y 668.502 el token. Confirma que Monad cobra el límite.
+  - La demo tardó menos de 3 minutos: 159 s del `mint` al `recoverExpired`, unos 6 s por paso.
 - **No es un deploy permanente:** Monad testnet se reinició desde génesis en diciembre de 2025. Si vuelve a pasar, el guard de cadena hace abortar a la API (`RESET_ON_CHAIN_MISMATCH=false`), y hay que borrar el archivo de deploy y deployar de nuevo.
 
 ## API e indexador
