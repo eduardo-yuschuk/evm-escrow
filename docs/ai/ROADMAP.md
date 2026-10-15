@@ -574,7 +574,7 @@ test/support/                      Anvil, un schema propio en Postgres y el orá
 - **Overrides** con un archivo de entorno descartable: los puertos cambian, `CONFIRMATIONS=2` deja `lag: 1` en `ok` y `LOG_LEVEL=debug` activa los logs de nivel debug. Con `RESET_ON_CHAIN_MISMATCH=false`, cambiar `ANVIL_PORT` recrea Anvil, que arranca una cadena nueva, y la API aborta con el mensaje que indica cómo seguir.
 - **`deploy.sh`:** deploya con un `startBlock` que no existe en la cadena o sin código en la dirección del contrato, y no deploya con el archivo que escribió. `shellcheck` no marca nada.
 - **Herramientas:** con las imágenes nuevas, `npm test` (79 tests, con el stack corriendo), `npm run lint`, `npm run typecheck` y `forge build` pasan.
-- Docker clásico no se probó, porque en esta máquina solo hay Docker rootless. El stack no agrega bind mounts, solo volúmenes nombrados, y el único bind mount, `init.sql`, es de la fase 8.
+- Docker clásico no se probó, porque en esta máquina solo hay Docker rootless. El stack no agrega bind mounts, solo volúmenes nombrados, y el único bind mount, `init.sql`, es de la fase 8. Quedó cubierto en la fase 11: el workflow `e2e` levanta el stack con el Docker clásico del runner de GitHub.
 
 **Hecho cuando:** un clon limpio levanta todo con un solo comando. ✅
 
@@ -620,7 +620,7 @@ test/support/                      Anvil, un schema propio en Postgres y el orá
 
 **Commits:** `feat: end-to-end demo with compose service and documentation`.
 
-## Fase 11: CI
+## Fase 11: CI ✅
 
 Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose` del README, así lo que pasa en CI pasa en cualquier máquina con Docker. El diseño está en [DESIGN](DESIGN.md#ejecución-y-tests).
 
@@ -660,11 +660,23 @@ Los workflows **no instalan Node ni Foundry**: corren los mismos `docker compose
 
 - **Los chequeos fallan cuando deben:** con una sola unidad de gas cambiada en `.gas-snapshot` o en `snapshots/EscrowGasTest.json`, `snapshot --check` y `FORGE_SNAPSHOT_CHECK` salen con código 1. La demo ya se había probado con bugs en la fase 10, y Slither con un hallazgo en la fase 4.
 - **`actionlint`:** 0 errores en los tres workflows.
-- **GitHub:** pendiente del push.
 
-**Hecho cuando:** los workflows están en verde en `main`.
+**Verificación en GitHub:** el primer push con los workflows (`b4c50e3`) dejó los tres en verde, y los badges del README dicen *passing*.
 
-**Commits:** `ci: contracts workflow`, `ci: api workflow`, `ci: e2e smoke test`, `docs: ci and progress`.
+| Workflow | Total | Pasos más largos |
+| --- | --- | --- |
+| `contracts` | 2 min 25 s | `forge test` con el perfil `ci` 99 s, build 23 s, `snapshot --check` 15 s |
+| `api` | 1 min 19 s | build 31 s, lint 24 s, tests 10 s |
+| `e2e` | 1 min 3 s | `up --build --wait` 41 s, demo 18 s |
+
+- Los tres corren en paralelo, así que un push queda verificado en unos 2 min 30 s.
+- El runner usa Docker clásico, y el código montado tiene otro dueño que en la máquina de desarrollo. Los pasos que escriben sobre él (`forge build`, la instalación de dependencias y `npm run abi`) pasaron sin ajustes.
+- Ningún job dejó anotaciones de advertencia, como las de una acción con un runtime de Node deprecado.
+- Los logs de los jobs no se pueden leer sin un token con permisos de admin, ni siquiera en un repo público. Los tiempos salen de la API pública de jobs.
+
+**Hecho cuando:** los workflows están en verde en `main`. ✅
+
+**Commits:** `ci: contracts, api and e2e workflows with documentation`.
 
 ## Fase 12: Cierre y entrega
 

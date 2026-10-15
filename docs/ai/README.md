@@ -320,4 +320,15 @@ Antes de preguntar, la IA corrió todos los pasos de los workflows sobre una cop
 - **Permisos mínimos.** `contents: read` y `persist-credentials: false`, para no dejar el token en `.git/config` mientras corren dependencias de terceros.
 - **Los chequeos de gas se probaron en falso.** Con una sola unidad de gas cambiada en cada snapshot, los dos comandos salen con código 1. El paso más lento es `forge test` con el perfil `ci`: 64 s.
 - **El commit de la fase 10.** Se agrupó en un solo commit, y se corrigió la línea *Commits* de esa fase en el ROADMAP.
-- **Pendiente:** ver los workflows en verde en GitHub después del push.
+- **Verificación en GitHub:** quedó para después del push (entrada 25).
+
+## 25. Fase 11: corridas en GitHub
+
+> ya pusheé, revisá las corridas en GitHub
+
+**Output:** la IA siguió las corridas por la API pública de GitHub, sin `gh` ni token. El push `b4c50e3` dejó los tres workflows en verde, y los badges del README dicen *passing*.
+
+- **Tiempos:** `contracts` 2 min 25 s, de los que 99 s son `forge test` con el perfil `ci`; `api` 1 min 19 s; `e2e` 1 min 3 s. Corren en paralelo. El detalle por paso está en el [ROADMAP](ROADMAP.md), fase 11, que quedó cerrada.
+- **Sin advertencias:** ningún job dejó anotaciones.
+- **Docker clásico cubierto.** El runner de GitHub usa Docker clásico, que en la fase 9 no se había podido probar. El stack y los servicios de herramientas pasaron sin ajustes.
+- **Límite de la verificación.** Los logs de los jobs piden un token con permisos de admin, aun en un repo público. Por eso se verificaron los resultados y los tiempos de cada paso, pero no su salida.
