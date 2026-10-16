@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {Escrow} from "../src/Escrow.sol";
 import {IEscrow} from "../src/IEscrow.sol";
+import {FeeOnTopERC20} from "./mocks/FeeOnTopERC20.sol";
 import {FeeOnTransferERC20} from "./mocks/FeeOnTransferERC20.sol";
 import {EscrowTestBase} from "./utils/EscrowTestBase.sol";
 
@@ -58,8 +59,9 @@ contract EscrowFuzzTest is EscrowTestBase {
         assertEq(escrow.getEscrow(id).amount, received);
         assertEq(feeToken.balanceOf(address(escrow)), received);
 
-        // The payout takes exactly the recorded amount out of the escrow; the fee is paid by the recipient.
+        // The withdrawal takes exactly the recorded amount out of the escrow; the fee is paid by the recipient.
         _act(Action.Confirm, id);
+        _withdraw(id);
         assertEq(feeToken.balanceOf(address(escrow)), 0);
         assertEq(feeToken.balanceOf(beneficiary), received - received * feeBps / 10_000);
     }
@@ -76,7 +78,7 @@ contract EscrowFuzzTest is EscrowTestBase {
         if (elapsed < CANCEL_WINDOW) {
             _act(Action.Cancel, id);
             _assertStatus(id, IEscrow.Status.CancelledBySender);
-            assertEq(token.balanceOf(sender), INITIAL_BALANCE);
+            assertEq(_holder(id), sender);
         } else {
             vm.expectRevert(abi.encodeWithSelector(IEscrow.CancelWindowClosed.selector, id, _cancelDeadline(id)));
             _act(Action.Cancel, id);
@@ -91,7 +93,7 @@ contract EscrowFuzzTest is EscrowTestBase {
         if (elapsed < TTL) {
             _act(Action.Confirm, id);
             _assertStatus(id, IEscrow.Status.Released);
-            assertEq(token.balanceOf(beneficiary), AMOUNT);
+            assertEq(_holder(id), beneficiary);
         } else {
             vm.expectRevert(abi.encodeWithSelector(IEscrow.EscrowHasExpired.selector, id, _expiresAt(id)));
             _act(Action.Confirm, id);
@@ -106,7 +108,7 @@ contract EscrowFuzzTest is EscrowTestBase {
         if (elapsed < TTL) {
             _act(Action.Reject, id);
             _assertStatus(id, IEscrow.Status.Rejected);
-            assertEq(token.balanceOf(sender), INITIAL_BALANCE);
+            assertEq(_holder(id), sender);
         } else {
             vm.expectRevert(abi.encodeWithSelector(IEscrow.EscrowHasExpired.selector, id, _expiresAt(id)));
             _act(Action.Reject, id);
@@ -121,7 +123,7 @@ contract EscrowFuzzTest is EscrowTestBase {
         if (elapsed >= TTL) {
             _act(Action.RecoverExpired, id);
             _assertStatus(id, IEscrow.Status.Expired);
-            assertEq(token.balanceOf(sender), INITIAL_BALANCE);
+            assertEq(_holder(id), sender);
         } else {
             vm.expectRevert(abi.encodeWithSelector(IEscrow.NotExpiredYet.selector, id, _expiresAt(id)));
             _act(Action.RecoverExpired, id);
@@ -129,21 +131,58 @@ contract EscrowFuzzTest is EscrowTestBase {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Payouts and access control
+    // Withdrawals and access control
     // ---------------------------------------------------------------------------------------------
 
-    function testFuzz_Resolution_PaysRecordedAmountToTheRightParty(uint256 amount, uint256 actionSeed) public {
+    /// @dev Any final status and any split of the amount into two withdrawals: the holder gets exactly
+    ///      the recorded amount, the other party nothing.
+    function testFuzz_Withdraw_PaysRecordedAmountToTheHolder(uint256 amount, uint256 actionSeed, uint256 first) public {
         amount = bound(amount, 1, INITIAL_BALANCE);
         Action action = Action(bound(actionSeed, 0, 3));
+        first = bound(first, 1, amount);
         uint256 id = _create(address(token), amount);
         if (action == Action.RecoverExpired) vm.warp(_expiresAt(id));
-
         _act(action, id);
+
+        _withdraw(id, first, first);
+        if (first < amount) _withdraw(id);
 
         uint256 toBeneficiary = action == Action.Confirm ? amount : 0;
         assertEq(token.balanceOf(beneficiary), toBeneficiary);
         assertEq(token.balanceOf(sender), INITIAL_BALANCE - toBeneficiary);
         assertEq(token.balanceOf(address(escrow)), 0);
+        assertEq(escrow.getEscrow(id).withdrawn, amount);
+    }
+
+    /// @dev With a token that charges its fee to the payer, on top of the amount, a withdrawal of any size
+    ///      either takes at most the escrow's balance out of the contract or reverts with nothing moved.
+    ///      The other escrow of the token stays fully backed either way.
+    function testFuzz_FeeOnTopToken_WithdrawNeverTakesMoreThanBalance(
+        uint256 feeBps,
+        uint256 amount,
+        uint256 transferAmount
+    ) public {
+        feeBps = bound(feeBps, 0, 10_000);
+        amount = bound(amount, 1, INITIAL_BALANCE / 4);
+        FeeOnTopERC20 feeToken = new FeeOnTopERC20(feeBps);
+        _fund(address(feeToken), sender);
+        uint256 id = _create(address(feeToken), amount);
+        uint256 other = _create(address(feeToken), amount);
+        _act(Action.Confirm, id);
+        transferAmount = bound(transferAmount, 1, amount);
+        uint256 debited = transferAmount + transferAmount * feeBps / 10_000;
+
+        if (debited > amount) {
+            vm.expectRevert(abi.encodeWithSelector(IEscrow.ExcessiveDebit.selector, id, amount, debited));
+            _withdrawAs(beneficiary, id, transferAmount, 0);
+            assertEq(feeToken.balanceOf(address(escrow)), 2 * amount);
+        } else {
+            _withdraw(id, transferAmount, transferAmount);
+            assertEq(escrow.getEscrow(id).withdrawn, debited);
+            assertEq(feeToken.balanceOf(beneficiary), transferAmount);
+            assertEq(feeToken.balanceOf(address(escrow)), 2 * amount - debited);
+        }
+        assertGe(feeToken.balanceOf(address(escrow)) - _balance(id), _balance(other), "other escrow short");
     }
 
     function testFuzz_RevertWhen_CallerIsNotTheParty(address caller, uint256 actionSeed, uint256 elapsed) public {
@@ -162,6 +201,18 @@ contract EscrowFuzzTest is EscrowTestBase {
         _actAs(caller, action, id);
     }
 
+    function testFuzz_RevertWhen_CallerIsNotTheHolder(address caller, uint256 actionSeed) public {
+        Action action = Action(bound(actionSeed, 0, 3));
+        uint256 id = _create();
+        if (action == Action.RecoverExpired) vm.warp(_expiresAt(id));
+        _act(action, id);
+        vm.assume(caller != _holder(id));
+
+        vm.expectRevert(abi.encodeWithSelector(IEscrow.NotHolder.selector, id, caller));
+        vm.prank(caller);
+        escrow.withdraw(id, AMOUNT, 0);
+    }
+
     function testFuzz_RevertWhen_EscrowDoesNotExist(uint256 id, uint256 actionSeed) public {
         _create();
         vm.assume(id != 1);
@@ -171,6 +222,10 @@ contract EscrowFuzzTest is EscrowTestBase {
 
         vm.expectRevert(abi.encodeWithSelector(IEscrow.EscrowNotFound.selector, id));
         _act(Action(bound(actionSeed, 0, 3)), id);
+
+        vm.expectRevert(abi.encodeWithSelector(IEscrow.EscrowNotFound.selector, id));
+        vm.prank(sender);
+        escrow.withdraw(id, AMOUNT, 0);
     }
 
     // ---------------------------------------------------------------------------------------------

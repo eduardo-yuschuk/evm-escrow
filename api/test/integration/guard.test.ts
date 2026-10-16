@@ -91,7 +91,7 @@ describe("chain guard after an Anvil restart", () => {
   it("with RESET_ON_CHAIN_MISMATCH, wipes the database and indexes the new chain", async () => {
     await ensureIndexerState(db.pool, deployment, true, silentLog);
 
-    expect(await dumpProjection(db.pool)).toEqual({ events: [], escrows: [] });
+    expect(await dumpProjection(db.pool)).toEqual({ events: [], escrows: [], withdrawals: [] });
     expect(await readCheckpoint(db.pool)).toBe(deployment.startBlock);
 
     await createEscrow(restarted.client, deployment, bob, alice.address);

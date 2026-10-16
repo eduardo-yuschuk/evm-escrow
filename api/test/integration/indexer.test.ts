@@ -9,7 +9,11 @@ import type { Address, Hash, LocalAccount } from "viem";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { Deployment } from "../../src/deployment.js";
-import { escrowAbi } from "../../src/generated/contracts.js";
+import {
+  escrowAbi,
+  feeOnTopErc20Abi,
+  feeOnTopErc20Bytecode,
+} from "../../src/generated/contracts.js";
 import { ensureIndexerState } from "../../src/indexer/guard.js";
 import { indexNextBatch, type IndexerContext } from "../../src/indexer/indexer.js";
 import {
@@ -19,8 +23,13 @@ import {
   createActivity,
   createEscrow,
   deployContracts,
+  deployedAddress,
+  fundForEscrow,
+  mined,
+  ONE_TOKEN,
   startAnvil,
   TTL,
+  withdraw,
   type Anvil,
 } from "../support/chain.js";
 import {
@@ -58,26 +67,30 @@ beforeEach(async () => {
 });
 
 describe("indexer", () => {
-  it("projects the four paths and an escrow left Pending, as the contract has them", async () => {
+  it("projects the four paths, their withdrawals and an escrow left Pending, as the contract has them", async () => {
     const { client } = anvil;
     await createActivity(client, deployment, 4);
     const { id } = await createEscrow(client, deployment, alice, bob.address);
     await client.increaseTime({ seconds: Number(TTL) });
     await client.mine({ blocks: 1 });
     await act(client, deployment, alice, "recoverExpired", id);
+    await withdraw(client, deployment, alice, id, ONE_TOKEN / 4n);
+    await withdraw(client, deployment, alice, id, (3n * ONE_TOKEN) / 4n);
 
     await catchUp(context);
 
     await expectProjectionMatchesChain(db.pool, client, deployment);
-    const { rows } = await db.pool.query<{ status: string }>(
-      "SELECT status FROM escrows ORDER BY id",
+    const { rows } = await db.pool.query<{ status: string; withdrawn: string; count: string }>(
+      `SELECT status, withdrawn, (SELECT count(*) FROM withdrawals WHERE escrow_id = id) AS count
+       FROM escrows ORDER BY id`,
     );
-    expect(rows.map((row) => row.status)).toEqual([
-      "Released",
-      "Rejected",
-      "CancelledBySender",
-      "Pending",
-      "Expired",
+    const half = String(ONE_TOKEN / 2n);
+    expect(rows).toEqual([
+      { status: "Released", withdrawn: String(ONE_TOKEN), count: "1" },
+      { status: "Rejected", withdrawn: half, count: "1" },
+      { status: "CancelledBySender", withdrawn: "0", count: "0" },
+      { status: "Pending", withdrawn: "0", count: "0" },
+      { status: "Expired", withdrawn: String(ONE_TOKEN), count: "2" },
     ]);
     expect(await readCheckpoint(db.pool)).toBe(await client.getBlockNumber());
   });
@@ -109,6 +122,8 @@ describe("indexer", () => {
       });
     const resolve = (account: LocalAccount, action: "confirm" | "reject" | "cancel", id: bigint) =>
       client.writeContract({ ...options(account), functionName: action, args: [id] });
+    const withdrawAll = (account: LocalAccount, id: bigint) =>
+      client.writeContract({ ...options(account), functionName: "withdraw", args: [id, 1n, 1n] });
 
     await client.setAutomine(false);
     let hashes: Hash[];
@@ -116,10 +131,12 @@ describe("indexer", () => {
       hashes = [
         await create(),
         await resolve(bob, "confirm", next),
+        await withdrawAll(bob, next),
         await create(),
         await resolve(alice, "cancel", next + 1n),
         await create(),
         await resolve(bob, "reject", next + 2n),
+        await withdrawAll(alice, next + 2n),
       ];
       await client.mine({ blocks: 1 });
     } finally {
@@ -128,21 +145,54 @@ describe("indexer", () => {
     const receipts = await Promise.all(
       hashes.map((hash) => client.getTransactionReceipt({ hash })),
     );
-    expect(receipts.map((receipt) => receipt.status)).toEqual(Array(6).fill("success"));
+    expect(receipts.map((receipt) => receipt.status)).toEqual(Array(8).fill("success"));
     const block = receipts[0]?.blockNumber;
     expect(receipts.every((receipt) => receipt.blockNumber === block)).toBe(true);
 
     await catchUp(context);
 
     await expectProjectionMatchesChain(db.pool, client, deployment);
-    const { rows } = await db.pool.query<{ status: string; same_second: boolean }>(
-      "SELECT status, created_at = resolved_at AS same_second FROM escrows ORDER BY id",
+    const { rows } = await db.pool.query<{
+      status: string;
+      withdrawn: string;
+      same_second: boolean;
+    }>(
+      "SELECT status, withdrawn, created_at = resolved_at AS same_second FROM escrows ORDER BY id",
     );
     expect(rows).toEqual([
-      { status: "Released", same_second: true },
-      { status: "CancelledBySender", same_second: true },
-      { status: "Rejected", same_second: true },
+      { status: "Released", withdrawn: "1", same_second: true },
+      { status: "CancelledBySender", withdrawn: "0", same_second: true },
+      { status: "Rejected", withdrawn: "1", same_second: true },
     ]);
+  });
+
+  it("projects what each withdrawal took from the escrow and what the holder got, apart", async () => {
+    const { client } = anvil;
+    // 1% charged to the payer on top of the amount: withdrawing 990 takes 999 from the escrow.
+    const receipt = await mined(
+      client,
+      await client.deployContract({
+        account: alice,
+        abi: feeOnTopErc20Abi,
+        bytecode: feeOnTopErc20Bytecode,
+        args: [100n],
+      }),
+    );
+    const token = deployedAddress(receipt);
+    await fundForEscrow(client, deployment, token, 2000n);
+    const { id } = await createEscrow(client, deployment, alice, bob.address, 1000n, token);
+    await act(client, deployment, bob, "confirm", id);
+    await withdraw(client, deployment, bob, id, 990n, 990n);
+
+    await catchUp(context);
+
+    await expectProjectionMatchesChain(db.pool, client, deployment);
+    const { rows } = await db.pool.query(
+      `SELECT e.amount, e.withdrawn, w.debited, w.received
+       FROM escrows e JOIN withdrawals w ON w.escrow_id = e.id WHERE e.id = $1`,
+      [id],
+    );
+    expect(rows).toEqual([{ amount: "1000", withdrawn: "999", debited: "999", received: "990" }]);
   });
 
   it("does not index the last CONFIRMATIONS blocks", async () => {

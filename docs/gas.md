@@ -21,26 +21,30 @@ Los dos fallan con una diferencia de una sola unidad de gas.
 - **Benchmark** ([`EscrowGasTest`](../contracts/test/EscrowGas.t.sol)): cada test arma un escenario y termina en la llamada que mide, con `vm.snapshotGasLastFrame`.
 - **Coverage no lo reescribe.** `forge coverage` compila sin optimizador y escribiría valores entre 1.537 y 4.062 de gas más altos, que ningún deploy paga. El benchmark consulta `vm.isContext(Coverage)` antes de escribir. Esa consulta no cambia el gas medido, porque no es el último frame, pero suma unos 715 al total de cada test en `.gas-snapshot`.
 - **Los números son de transacción completa,** incluidos los 21.000 de gas intrínseco, el calldata y el acceso en frío a cuentas y slots.
-- **Se verificaron contra una cadena real:** las mismas transacciones enviadas a Anvil dan exactamente el mismo `gasUsed` en el recibo.
-- **Son costos de Cancun,** el `evm_version` del proyecto, que Anvil 1.8.3 aplica con cualquier hardfork. Sepolia, en octubre de 2026, ya cobra mucho más por crear contratos: según su `eth_estimateGas`, el deploy de `Escrow` cuesta 6.545.373 y el del token de prueba 3.343.116, contra 933.537 y 508.180 acá. Por eso el deploy toma el gas del nodo (ver [Sepolia](ai/DESIGN.md#sepolia)). Monad testnet, en cambio, cobra casi lo mismo que Cancun: 941.725 y 514.233 (ver [Monad testnet](ai/DESIGN.md#monad-testnet)).
+- **Se verificaron contra una cadena real:** las mismas transacciones enviadas a Anvil dan exactamente el mismo `gasUsed` en el recibo. Se repitió en la fase 13 con las resoluciones y los tres escenarios de `withdraw`.
+- **Son costos de Cancun,** el `evm_version` del proyecto, que Anvil 1.8.3 aplica con cualquier hardfork. Sepolia, en octubre de 2026, ya cobra mucho más por crear contratos: según su `eth_estimateGas`, el deploy de `Escrow` cuesta 6.545.373 y el del token de prueba 3.343.116, contra 933.537 y 508.180 acá. Son números de la versión anterior a los retiros, la que está deployada. Por eso el deploy toma el gas del nodo (ver [Sepolia](ai/DESIGN.md#sepolia)). Monad testnet, en cambio, cobra casi lo mismo que Cancun: 941.725 y 514.233 (ver [Monad testnet](ai/DESIGN.md#monad-testnet)).
 - **Determinismo:** `forge snapshot` usa una semilla fija para el fuzz, así que `.gas-snapshot` sale idéntico en cada corrida, incluidas las entradas de fuzz e invariantes. Se comprobó corriéndolo dos veces y comparando.
 
 ## Gas por operación
 
-Estado estable: el contrato ya tiene otros escrows del mismo token y quien recibe el pago ya tiene saldo del token, así que ningún balance pasa de cero a no-cero ni al revés.
+Estado estable: el contrato ya tiene otros escrows del mismo token y quien retira ya tiene saldo del token, así que ningún balance pasa de cero a no-cero ni al revés.
 
 | Operación | Gas | Notas |
 | --- | ---: | --- |
-| `createEscrow` | 141.000 | |
+| `createEscrow` | 141.000 | Igual que antes de los retiros: `withdrawn` no se escribe al crear |
 | `createEscrow`, primer escrow del contrato | 175.200 | +34.200: `escrowCount` y el saldo del token en el contrato pasan de 0 a no-cero (2 × 17.100) |
-| `cancel` | 48.971 | |
-| `confirm` | 51.026 | |
-| `confirm`, beneficiary sin saldo previo del token | 68.126 | +17.100: el saldo del beneficiary pasa de 0 a no-cero, lo paga el token |
-| `reject` | 50.998 | |
-| `recoverExpired` | 49.018 | 44.218 en Anvil cuando era el último escrow: vaciar el saldo del contrato da un refund de 4.800 |
-| Deploy de `Escrow` | 933.537 | Runtime de 4.063 B, initcode de 4.389 B |
+| `cancel` | 28.904 | |
+| `confirm` | 30.953 | |
+| `reject` | 30.931 | |
+| `recoverExpired` | 28.951 | |
+| `withdraw`, todo el saldo | 75.046 | |
+| `withdraw`, beneficiary sin saldo previo del token | 92.146 | +17.100: el saldo del beneficiary pasa de 0 a no-cero, lo paga el token |
+| `withdraw`, segunda parte | 57.946 | −17.100: `_withdrawn` ya no es cero, así que escribirlo cuesta 2.900 y no 20.000 |
+| Deploy de `Escrow` | 1.164.502 | Runtime de 5.131 B, initcode de 5.457 B |
 
 `getEscrow` es una vista: se consulta con `eth_call` y no cuesta gas.
+
+**Lo que costaron los retiros (fase 13).** Antes, cada resolución transfería en la misma llamada: `cancel` costaba 48.971 y `confirm` 51.026. Ahora cada resolución cuesta unos 20.000 menos, y el retiro, 75.046 aparte. Un escrow completo, crear, resolver y retirar todo, pasa de unos 191.000 a unos 247.000 de gas, un 29 % más. La mayor parte es una transacción más (21.000 intrínsecos), la primera escritura de `_withdrawn` (20.000) y los cuatro `balanceOf` que miden el débito y lo recibido.
 
 ## Storage
 
@@ -48,12 +52,13 @@ El layout y su justificación están en el [DESIGN, sección Storage](ai/DESIGN.
 
 - **Dónde se va el gas de `createEscrow`.** Escribe 4 slots nuevos, de cero a no-cero, a 22.100 cada uno: 88.400 de 141.000, el 63 %. Por eso la única palanca grande es la cantidad de slots, no las micro-optimizaciones de código.
 - **Una sola escritura al resolver.** `status` comparte el slot 0 con `sender` y `createdAt`, así que cada resolución hace un único `SSTORE`, sobre un slot que ya leyó (2.900).
+- **`withdrawn` en un mapping aparte.** Dentro del struct, el `createEscrow` que escribe el struct completo también escribiría su cero, en un slot frío: medido, 2.245 más por creación. Aparte, no cuesta nada hasta el primer retiro.
 - **Deadlines derivados.** Guardados como `uint64` entrarían en el espacio libre de los slots 1 y 2 sin agregar slots, pero sumarían operaciones de empaquetado al escribir y leer, y dos fuentes de verdad para el mismo dato. Derivarlos de `createdAt` y de las `immutable` cuesta unas pocas sumas, porque leer una `immutable` no accede a storage.
 - **`amount` como `uint96` (3 slots).** Medido abajo: ahorra 22.059 en `createEscrow` (−15,6 %). Se descartó por el límite de monto; ver [DESIGN](ai/DESIGN.md#storage).
 
 ## Micro-optimizaciones evaluadas
 
-Cada variante se aplicó sobre una copia del contrato, se corrió el benchmark y se restauró el original. Diferencia de gas por transacción contra la versión actual (negativo = más barato):
+Cada variante se aplicó sobre una copia del contrato, se corrió el benchmark y se restauró el original. Se midieron en la fase 4, sobre la versión anterior a los retiros, cuando las resoluciones transferían. Diferencia de gas por transacción contra esa versión (negativo = más barato):
 
 | Variante | `createEscrow` | `cancel` | `confirm` | `reject` | `recoverExpired` | Runtime | Veredicto |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |

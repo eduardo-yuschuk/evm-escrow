@@ -6,10 +6,10 @@ import {EscrowTestBase} from "./utils/EscrowTestBase.sol";
 
 contract EscrowResolveTest is EscrowTestBase {
     // ---------------------------------------------------------------------------------------------
-    // Happy paths: each transition moves the funds to the right party
+    // Happy paths: each transition sets its final status and moves no tokens
     // ---------------------------------------------------------------------------------------------
 
-    function test_Cancel_ReturnsFundsToSender() public {
+    function test_Cancel_AssignsFundsToSender() public {
         uint256 id = _create();
 
         vm.expectEmit(address(escrow));
@@ -17,12 +17,10 @@ contract EscrowResolveTest is EscrowTestBase {
         _act(Action.Cancel, id);
 
         _assertStatus(id, IEscrow.Status.CancelledBySender);
-        assertEq(token.balanceOf(sender), INITIAL_BALANCE);
-        assertEq(token.balanceOf(beneficiary), 0);
-        assertEq(token.balanceOf(address(escrow)), 0);
+        _assertAssignedTo(id, sender);
     }
 
-    function test_Confirm_SendsFundsToBeneficiary() public {
+    function test_Confirm_AssignsFundsToBeneficiary() public {
         uint256 id = _create();
 
         vm.expectEmit(address(escrow));
@@ -30,12 +28,10 @@ contract EscrowResolveTest is EscrowTestBase {
         _act(Action.Confirm, id);
 
         _assertStatus(id, IEscrow.Status.Released);
-        assertEq(token.balanceOf(sender), INITIAL_BALANCE - AMOUNT);
-        assertEq(token.balanceOf(beneficiary), AMOUNT);
-        assertEq(token.balanceOf(address(escrow)), 0);
+        _assertAssignedTo(id, beneficiary);
     }
 
-    function test_Reject_ReturnsFundsToSender() public {
+    function test_Reject_AssignsFundsToSender() public {
         uint256 id = _create();
 
         vm.expectEmit(address(escrow));
@@ -43,12 +39,10 @@ contract EscrowResolveTest is EscrowTestBase {
         _act(Action.Reject, id);
 
         _assertStatus(id, IEscrow.Status.Rejected);
-        assertEq(token.balanceOf(sender), INITIAL_BALANCE);
-        assertEq(token.balanceOf(beneficiary), 0);
-        assertEq(token.balanceOf(address(escrow)), 0);
+        _assertAssignedTo(id, sender);
     }
 
-    function test_RecoverExpired_ReturnsFundsToSender() public {
+    function test_RecoverExpired_AssignsFundsToSender() public {
         uint256 id = _create();
         vm.warp(_expiresAt(id));
 
@@ -57,9 +51,7 @@ contract EscrowResolveTest is EscrowTestBase {
         _act(Action.RecoverExpired, id);
 
         _assertStatus(id, IEscrow.Status.Expired);
-        assertEq(token.balanceOf(sender), INITIAL_BALANCE);
-        assertEq(token.balanceOf(beneficiary), 0);
-        assertEq(token.balanceOf(address(escrow)), 0);
+        _assertAssignedTo(id, sender);
     }
 
     function test_Resolve_KeepsEscrowDataReadable() public {
@@ -67,15 +59,18 @@ contract EscrowResolveTest is EscrowTestBase {
         IEscrow.EscrowView memory before = escrow.getEscrow(id);
 
         _act(Action.Confirm, id);
+        _withdraw(id);
 
         IEscrow.EscrowView memory afterwards = escrow.getEscrow(id);
         assertEq(afterwards.sender, before.sender);
         assertEq(afterwards.beneficiary, before.beneficiary);
         assertEq(afterwards.token, before.token);
         assertEq(afterwards.amount, before.amount);
+        assertEq(afterwards.withdrawn, before.amount);
         assertEq(afterwards.createdAt, before.createdAt);
         assertEq(afterwards.cancelDeadline, before.cancelDeadline);
         assertEq(afterwards.expiresAt, before.expiresAt);
+        assertEq(uint8(afterwards.status), uint8(IEscrow.Status.Released));
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -124,7 +119,7 @@ contract EscrowResolveTest is EscrowTestBase {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // A resolved escrow can never be touched again: 4 final statuses x 4 actions
+    // A resolved escrow can never be resolved again, before or after withdrawing: 4 final statuses x 4 actions
     // ---------------------------------------------------------------------------------------------
 
     function test_RevertWhen_ActingOnResolvedEscrow() public {
@@ -133,15 +128,19 @@ contract EscrowResolveTest is EscrowTestBase {
 
         for (uint256 s; s < statuses.length; ++s) {
             uint256 id = _createResolved(statuses[s]);
-            uint256 escrowBalance = token.balanceOf(address(escrow));
 
-            for (uint256 a; a < actions.length; ++a) {
-                vm.expectRevert(abi.encodeWithSelector(IEscrow.NotPending.selector, id, statuses[s]));
-                _act(actions[a], id);
+            for (uint256 withdrawn; withdrawn < 2; ++withdrawn) {
+                if (withdrawn == 1) _withdraw(id);
+                uint256 escrowBalance = token.balanceOf(address(escrow));
+
+                for (uint256 a; a < actions.length; ++a) {
+                    vm.expectRevert(abi.encodeWithSelector(IEscrow.NotPending.selector, id, statuses[s]));
+                    _act(actions[a], id);
+                }
+
+                _assertStatus(id, statuses[s]);
+                assertEq(token.balanceOf(address(escrow)), escrowBalance);
             }
-
-            _assertStatus(id, statuses[s]);
-            assertEq(token.balanceOf(address(escrow)), escrowBalance);
         }
     }
 
@@ -181,7 +180,7 @@ contract EscrowResolveTest is EscrowTestBase {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Isolation: resolving one escrow does not affect the others
+    // Isolation: resolving and withdrawing from one escrow does not affect the others
     // ---------------------------------------------------------------------------------------------
 
     function test_Resolve_DoesNotAffectOtherEscrows() public {
@@ -195,6 +194,8 @@ contract EscrowResolveTest is EscrowTestBase {
 
         _act(Action.Confirm, confirmed);
         _act(Action.Cancel, cancelled);
+        _withdraw(confirmed);
+        _withdraw(cancelled);
 
         _assertStatus(untouched, IEscrow.Status.Pending);
         assertEq(escrow.getEscrow(untouched).amount, 2 * AMOUNT);
@@ -202,7 +203,22 @@ contract EscrowResolveTest is EscrowTestBase {
 
         vm.prank(beneficiary);
         escrow.confirm(untouched);
+        _withdraw(untouched);
         assertEq(token.balanceOf(beneficiary), 3 * AMOUNT);
         assertEq(token.balanceOf(address(escrow)), 0);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------------------------
+
+    /// @dev The escrow's whole amount is still in the contract, nothing withdrawn, and `holder` is the
+    ///      one who can withdraw it.
+    function _assertAssignedTo(uint256 id, address holder) internal view {
+        assertEq(_holder(id), holder, "holder");
+        assertEq(escrow.getEscrow(id).withdrawn, 0, "withdrawn");
+        assertEq(token.balanceOf(address(escrow)), AMOUNT, "escrow balance");
+        assertEq(token.balanceOf(sender), INITIAL_BALANCE - AMOUNT, "sender balance");
+        assertEq(token.balanceOf(beneficiary), 0, "beneficiary balance");
     }
 }

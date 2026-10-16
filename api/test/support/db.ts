@@ -43,7 +43,7 @@ export async function createTestDatabase(): Promise<TestDatabase> {
     url: url.toString(),
     pool,
     reset: async () => {
-      await pool.query("TRUNCATE events, escrows, indexer_state");
+      await pool.query("TRUNCATE events, withdrawals, escrows, indexer_state");
     },
     drop: async () => {
       await pool.end();
@@ -69,8 +69,11 @@ export async function countEvents(pool: Pool): Promise<number> {
 /** Every row of the projection, in a stable order. */
 export async function dumpProjection(
   pool: Pool,
-): Promise<{ events: unknown[]; escrows: unknown[] }> {
+): Promise<{ events: unknown[]; escrows: unknown[]; withdrawals: unknown[] }> {
   const events = await pool.query("SELECT * FROM events ORDER BY block_number, log_index");
   const escrows = await pool.query("SELECT * FROM escrows ORDER BY id");
-  return { events: events.rows, escrows: escrows.rows };
+  const withdrawals = await pool.query(
+    "SELECT * FROM withdrawals ORDER BY block_number, log_index",
+  );
+  return { events: events.rows, escrows: escrows.rows, withdrawals: withdrawals.rows };
 }

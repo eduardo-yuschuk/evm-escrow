@@ -12,6 +12,7 @@ const hash = (n: number): Hash => `0x${n.toString(16).padStart(64, "0")}`;
 const CREATE_TX = hash(1);
 const RESOLVE_TX = hash(2);
 const OTHER_TX = hash(3);
+const WITHDRAW_TX = hash(4);
 
 function indexed(event: EscrowEvent, txHash: Hash): IndexedEvent {
   return {
@@ -43,6 +44,9 @@ const created = indexed(
 const resolution = (name: ResolutionEventName, txHash: Hash) =>
   indexed({ name, args: { id: 1n } }, txHash);
 
+const withdrawal = (debited: bigint, received = debited) =>
+  indexed({ name: "EscrowWithdrawn", args: { id: 1n, debited, received } }, WITHDRAW_TX);
+
 const RESOLUTIONS: [ResolutionEventName, FinalStatus][] = [
   ["EscrowCancelled", "CancelledBySender"],
   ["EscrowReleased", "Released"],
@@ -50,8 +54,14 @@ const RESOLUTIONS: [ResolutionEventName, FinalStatus][] = [
   ["EscrowExpired", "Expired"],
 ];
 
-const pending: EscrowState = { status: "Pending", createdTx: CREATE_TX, resolvedTx: null };
-const released: EscrowState = { status: "Released", createdTx: CREATE_TX, resolvedTx: RESOLVE_TX };
+const pending: EscrowState = {
+  status: "Pending",
+  amount: 5n,
+  withdrawn: 0n,
+  createdTx: CREATE_TX,
+  resolvedTx: null,
+};
+const released: EscrowState = { ...pending, status: "Released", resolvedTx: RESOLVE_TX };
 
 describe("applyEvent", () => {
   it("creates an escrow that is not projected yet, timestamped with its block", () => {
@@ -81,6 +91,25 @@ describe("applyEvent", () => {
     });
   });
 
+  it.each(RESOLUTIONS)(
+    "applies a withdrawal from a %s escrow, up to its balance, with its fees",
+    (_, status) => {
+      const state: EscrowState = { ...released, status, withdrawn: 2n };
+      expect(applyEvent(state, withdrawal(3n, 2n))).toEqual({
+        kind: "withdraw",
+        withdrawal: {
+          id: 1n,
+          debited: 3n,
+          received: 2n,
+          txHash: WITHDRAW_TX,
+          logIndex: 0,
+          blockNumber: 10n,
+          withdrawnAt: 1_000n,
+        },
+      });
+    },
+  );
+
   describe("the same event twice is a no-op", () => {
     it("EscrowCreated, while the escrow is Pending or once resolved", () => {
       for (const state of [pending, released]) {
@@ -93,7 +122,7 @@ describe("applyEvent", () => {
     });
 
     it.each(RESOLUTIONS)("%s", (name, status) => {
-      const state: EscrowState = { status, createdTx: CREATE_TX, resolvedTx: RESOLVE_TX };
+      const state: EscrowState = { ...released, status };
       expect(applyEvent(state, resolution(name, RESOLVE_TX))).toEqual({
         kind: "skip",
         level: "debug",
@@ -104,6 +133,30 @@ describe("applyEvent", () => {
 
   // The contract makes these impossible: they mean the projection is out of sync with the chain.
   describe("an event that conflicts with the projection is reported and not applied", () => {
+    it("EscrowWithdrawn on an unknown escrow", () => {
+      expect(applyEvent(undefined, withdrawal(1n))).toEqual({
+        kind: "skip",
+        level: "error",
+        reason: "withdrawal from an unknown escrow",
+      });
+    });
+
+    it("EscrowWithdrawn on a Pending escrow", () => {
+      expect(applyEvent(pending, withdrawal(1n))).toEqual({
+        kind: "skip",
+        level: "error",
+        reason: "withdrawal from a Pending escrow",
+      });
+    });
+
+    it("EscrowWithdrawn above the balance", () => {
+      expect(applyEvent({ ...released, withdrawn: 2n }, withdrawal(4n))).toEqual({
+        kind: "skip",
+        level: "error",
+        reason: "withdrawal of 4 exceeds the balance of 3",
+      });
+    });
+
     it.each(RESOLUTIONS)("%s on an escrow resolved by another transaction", (name) => {
       expect(applyEvent(released, resolution(name, OTHER_TX))).toEqual({
         kind: "skip",

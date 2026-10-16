@@ -6,7 +6,7 @@
 
 Escrow de tokens ERC-20 en Solidity, más una API/indexador en TypeScript que proyecta los eventos del contrato en Postgres.
 
-- **Contrato** (`contracts/`): un solo contrato gestiona muchos escrows. El enviador deposita tokens y el beneficiario los confirma o rechaza; el enviador puede cancelar en las primeras 2 horas y recuperar los fondos después de 7 días. Foundry, Solidity 0.8.37 y OpenZeppelin.
+- **Contrato** (`contracts/`): un solo contrato gestiona muchos escrows. El enviador deposita tokens y el beneficiario los confirma o rechaza; el enviador puede cancelar en las primeras 2 horas y recuperar los fondos después de 7 días. Resuelto el escrow, la parte que corresponde retira los fondos. Foundry, Solidity 0.8.37 y OpenZeppelin.
 - **API e indexador** (`api/`): Node.js, TypeScript y viem. Indexa los eventos en Postgres y expone el estado de cada escrow por HTTP.
 - **Todo corre con Docker Compose:** nodo local (Anvil), deploy, base de datos, API, tests, análisis estático y demo.
 - **También en testnets,** con ventanas cortas para ver un vencimiento en vivo: ver [Sepolia](#sepolia) y [Monad testnet](#monad-testnet), donde la demo tarda minutos en lugar de media hora.
@@ -79,7 +79,7 @@ docker compose run --rm forge coverage
 docker compose run --rm forge fmt --check
 ```
 
-81 tests, con 100 % de cobertura en `Escrow.sol`.
+99 tests, con 100 % de cobertura en `Escrow.sol`.
 
 ### Análisis estático
 
@@ -95,7 +95,7 @@ docker compose run --rm npm run lint
 docker compose run --rm npm run typecheck
 ```
 
-79 tests. `npm` levanta `postgres` si no está corriendo, y queda corriendo hasta `docker compose down`. Los tests usan su propia base, `escrow_test`, y cada archivo levanta su propio Anvil.
+142 tests. `npm` levanta `postgres` si no está corriendo, y queda corriendo hasta `docker compose down`. Los tests usan su propia base, `escrow_test`, y cada archivo levanta su propio Anvil.
 
 ### ABI tipado
 
@@ -112,12 +112,12 @@ git diff --exit-code api/src/generated
 docker compose run --rm demo
 ```
 
-Si el stack no está corriendo, lo levanta y espera a que `api` esté sano. Crea un escrow por cada camino y muestra el estado que devuelve la API después de cada paso:
+Si el stack no está corriendo, lo levanta y espera a que `api` esté sano. Crea un escrow por cada camino y muestra el estado que devuelve la API después de cada paso. Cada resolución asigna los fondos, y el paso siguiente es el retiro de quien corresponde:
 
-1. Escrow A: crear → **confirmar** → `Released`
-2. Escrow B: crear → **rechazar** → `Rejected`
-3. Escrow C: crear → **cancelar** (dentro de las 2 h) → `CancelledBySender`
-4. Escrow D: crear → avanzar 7 días → la API lo informa como `ExpiredRecoverable` → **recuperar** → `Expired`
+1. Escrow A: crear → **confirmar** → `Released` → el beneficiario retira
+2. Escrow B: crear → **rechazar** → `Rejected` → el enviador retira
+3. Escrow C: crear → **cancelar** (dentro de las 2 h) → `CancelledBySender` → el enviador retira
+4. Escrow D: crear → avanzar 7 días → la API lo informa como `ExpiredRecoverable` → **recuperar** → `Expired` → el enviador retira
 
 Salida de una corrida sobre un stack recién levantado:
 
@@ -131,20 +131,24 @@ Escrow demo: API http://api:3000, chain 31337
 
 approve 1000 MOCK
 A  create 100 MOCK   #1   Pending             can cancel, confirm, reject
-   confirm           #1   Released            100 MOCK to the beneficiary
+   confirm           #1   Released            100 MOCK for the beneficiary to withdraw
+   withdraw          #1   Released            100 MOCK to the beneficiary
 B  create 200 MOCK   #2   Pending             can cancel, confirm, reject
-   reject            #2   Rejected            200 MOCK back to the sender
+   reject            #2   Rejected            200 MOCK for the sender to withdraw
+   withdraw          #2   Rejected            200 MOCK back to the sender
 C  create 300 MOCK   #3   Pending             can cancel, confirm, reject
-   cancel            #3   CancelledBySender   300 MOCK back to the sender
+   cancel            #3   CancelledBySender   300 MOCK for the sender to withdraw
+   withdraw          #3   CancelledBySender   300 MOCK back to the sender
 D  create 400 MOCK   #4   Pending             can cancel, confirm, reject
    advance 7 days    #4   ExpiredRecoverable  on-chain Pending, can recover
-   recoverExpired    #4   Expired             400 MOCK back to the sender
+   recoverExpired    #4   Expired             400 MOCK for the sender to withdraw
+   withdraw          #4   Expired             400 MOCK back to the sender
 
 Every state matched. The full views, from the host:
   curl "http://localhost:3000/escrows?sender=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266&limit=4"
 ```
 
-- **Verifica cada paso.** Espera a que la API refleje el paso y compara el estado, las acciones admitidas, los hashes de las transacciones y los saldos. Si algo no coincide, o la API no lo refleja en 30 s, termina con código 1. Por eso sirve como smoke test.
+- **Verifica cada paso.** Espera a que la API refleje el paso y compara el estado, las acciones admitidas, los hashes de las transacciones y los saldos: que resolver no mueva tokens y que el retiro llegue entero. Si algo no coincide, o la API no lo refleja en 30 s, termina con código 1. Por eso sirve como smoke test.
 - **Se puede repetir.** Cada corrida crea cuatro escrows nuevos y adelanta 7 días el reloj de Anvil.
 
 ### Ejemplos HTTP
@@ -156,11 +160,11 @@ curl http://localhost:3000/health          # DB, RPC, último bloque indexado y 
 ```
 
 ```json
-{ "status": "ok", "db": "ok", "rpc": "ok", "lastIndexedBlock": 11, "chainHead": 11, "lag": 0 }
+{ "status": "ok", "db": "ok", "rpc": "ok", "lastIndexedBlock": 26, "chainHead": 26, "lag": 0 }
 ```
 
 ```bash
-curl http://localhost:3000/escrows/1       # un escrow, con su estado efectivo y qué acciones admite
+curl http://localhost:3000/escrows/1       # un escrow, con su estado efectivo, qué acciones admite y sus retiros
 ```
 
 ```json
@@ -170,28 +174,42 @@ curl http://localhost:3000/escrows/1       # un escrow, con su estado efectivo y
   "beneficiary": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
   "token": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
   "amount": "100000000000000000000",
-  "createdAt": 1792078864,
-  "cancelDeadline": 1792086064,
-  "expiresAt": 1792683664,
+  "withdrawn": "100000000000000000000",
+  "withdrawable": "0",
+  "createdAt": 1792113785,
+  "cancelDeadline": 1792120985,
+  "expiresAt": 1792718585,
   "onchainStatus": "Released",
   "status": "Released",
+  "holder": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
   "canCancel": false,
   "canConfirm": false,
   "canReject": false,
   "canRecover": false,
-  "createdTx": "0x711ef443c8af106075ffbe116b95528727ceb3a2f1ede89f1334a79ae9351265",
-  "resolvedTx": "0x6f6c9fc67e70bb407508366cb37170fead1db8e7ab7417fbdfa8bd0739813970",
-  "resolvedAt": 1792078864,
-  "now": 1792683671
+  "canWithdraw": false,
+  "createdTx": "0x3c2ab2dbb04b89b06a8b7a84a95554c12d594c912e069711966b99b8b5e19c4f",
+  "resolvedTx": "0xae75466ddc62a2dfcd427bfacf345f4e0c514e56cddd2ffc1eb0658394fad89d",
+  "resolvedAt": 1792113785,
+  "withdrawals": [
+    {
+      "txHash": "0x3b1c9d4796e459f5583930088bdeaa128c3179bb618bc2021f231fa2ee6ae1fb",
+      "withdrawnAt": 1792113786,
+      "debited": "100000000000000000000",
+      "received": "100000000000000000000"
+    }
+  ],
+  "now": 1792718595
 }
 ```
+
+`holder` es quien puede retirar y `withdrawable`, lo que le queda. Cada retiro informa lo que sacó del contrato (`debited`) y lo que recibió el titular (`received`): con un token sin comisiones coinciden.
 
 ```bash
 curl "http://localhost:3000/escrows?sender=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266&status=Expired&limit=20&offset=0"
 ```
 
 ```
-{ "items": [{ "id": "4", "status": "Expired", "amount": "400000000000000000000", … }], "limit": 20, "offset": 0, "total": 1 }
+{ "items": [{ "id": "4", "status": "Expired", "amount": "400000000000000000000", "withdrawn": "400000000000000000000", … }], "limit": 20, "offset": 0, "total": 1 }
 ```
 
 Cada item tiene el formato de `/escrows/:id`. Los filtros son `sender`, `beneficiary` y `status`, combinables; `status` filtra por el estado efectivo:
@@ -205,6 +223,18 @@ curl "http://localhost:3000/escrows?beneficiary=0x70997970C51812dc3A010C7d01b50e
 ```
 
 Vacío, porque la demo recupera el escrow D. Mientras está vencido sin recuperar, el paso `advance 7 days` de la demo lo muestra como `ExpiredRecoverable`.
+
+Cuánto puede retirar el titular, sin conocer la comisión del token: la API simula retiros contra el último bloque y devuelve el `transferAmount` más alto que pasa, y lo que recibiría por él.
+
+```bash
+curl http://localhost:3000/escrows/1/max-withdrawal
+```
+
+```json
+{ "id": "1", "holder": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8", "withdrawable": "0", "transferAmount": "0", "received": "0", "blockNumber": 26 }
+```
+
+Cero, porque la demo ya retiró todo. Con un token sin comisión, `transferAmount` es todo lo que queda; con una comisión cobrada aparte, el máximo que entra en el saldo con su comisión. Hay un ejemplo en [DESIGN](docs/ai/DESIGN.md#get-escrowsidmax-withdrawal).
 
 Errores, con el formato de fastify:
 
@@ -234,6 +264,8 @@ El mismo contrato está deployado en Sepolia con ventanas cortas, 5 minutos para
 | Token de prueba `MOCK`, con mint abierto | [`0xbCb0FcD74C568Be777E86734db21d35EeB2C826e`](https://sepolia.etherscan.io/address/0xbcb0fcd74c568be777e86734db21d35eeb2c826e#code) |
 
 El archivo de deploy es [`contracts/deployments/11155111.json`](contracts/deployments/11155111.json).
+
+> **Versión anterior a los retiros.** El contrato deployado paga en la misma llamada que resuelve y no tiene `withdraw`. La API actual lo indexa, pero muestra `canWithdraw` en escrows que ya se pagaron, y la demo actual falla al retirar. La salida de abajo es de esa versión. Para probar la actual hay que deployar de nuevo (pasos 1 a 4).
 
 **Indexar el contrato deployado** no necesita claves ni cuentas: usa el archivo de deploy versionado y un RPC público.
 
@@ -293,6 +325,8 @@ En Sepolia la demo tarda cerca de media hora, porque cada paso espera 12 bloques
 
 El token tiene la misma dirección que el `Escrow` de Sepolia: los deployó la misma cuenta con el mismo nonce, y la dirección de un contrato depende solo de esos dos datos. El archivo de deploy es [`contracts/deployments/10143.json`](contracts/deployments/10143.json).
 
+> **Versión anterior a los retiros,** como en [Sepolia](#sepolia): la salida de abajo es de esa versión, y para probar la actual hay que deployar de nuevo (pasos 1 a 4).
+
 **Indexar el contrato deployado** no necesita claves:
 
 ```bash
@@ -344,15 +378,16 @@ Una línea por decisión; el desarrollo de cada una está en [DESIGN](docs/ai/DE
 - **Ventanas semiabiertas:** cancelar con `t < +2h`, confirmar y rechazar con `t < +7d`, recuperar con `t >= +7d`; a los 7 días no se solapan (decisiones 1 y 2).
 - **El beneficiario actúa desde el primer segundo,** también durante las 2 h del enviador: gana la primera transacción minada (decisión 3).
 - **Ventanas `immutable`,** validadas en el constructor, para poder deployar con ventanas cortas en una testnet ([Interfaz](docs/ai/DESIGN.md#interfaz)).
-- **Monto recibido, no pedido:** con tokens fee-on-transfer, un escrow nunca paga más de lo que aportó (decisión 7).
+- **Monto recibido, no pedido, y débito medido en cada retiro:** con comisión descontada o cobrada aparte, un escrow nunca saca del contrato más de lo que aportó (decisión 7, [Retiros](docs/ai/DESIGN.md#retiros)).
 - **Sin owner, pausa, upgrade ni `rescue`:** nadie más que las partes puede mover fondos (decisión 9, [Seguridad](docs/ai/DESIGN.md#seguridad)).
-- **Push:** los fondos se transfieren en la misma llamada que resuelve el escrow (decisión 15).
-- **CEI al resolver y `nonReentrant` en las cinco funciones que mueven fondos,** con `ReentrancyGuardTransient` ([Guard de reentrada](docs/ai/DESIGN.md#guard-de-reentrada-reentrancyguardtransient)).
+- **Pull:** resolver asigna los fondos a su titular, que los retira con `withdraw(id, transferAmount, minReceived)`, en una o más veces. Es la única salida de fondos (decisión 15, [Retiros](docs/ai/DESIGN.md#retiros)).
+- **`minReceived` en cada retiro,** fijado por quien cobra, contra una comisión de salida que el token cambie ([Retiros](docs/ai/DESIGN.md#retiros)).
+- **`nonReentrant` en las seis funciones que cambian estado,** con un solo `ReentrancyGuardTransient`: mientras corre una llamada al token, no se ejecuta nada del contrato ([Guard de reentrada](docs/ai/DESIGN.md#guard-de-reentrada-reentrancyguardtransient)).
 - **`SafeERC20`** para los tokens que no devuelven `bool`, y un token sin código se rechaza (decisión 12).
 - **Ids secuenciales desde 1,** asignados por el contrato (decisión 10).
 - **Custom errors con el id y el dato que falló;** `getEscrow` revierte si el id no existe ([Custom errors](docs/ai/DESIGN.md#custom-errors), decisión 11).
-- **Eventos de resolución solo con el `id`:** el indexador lo cruza con `EscrowCreated`, y cada resolución gasta menos gas (decisión 16).
-- **Storage en 4 slots,** con los deadlines derivados de `createdAt` y timestamps `uint64` ([Storage](docs/ai/DESIGN.md#storage)).
+- **Eventos de resolución solo con el `id`,** y `EscrowWithdrawn` con lo debitado y lo recibido: el indexador lo cruza con `EscrowCreated`, y cada transacción gasta menos gas (decisión 16).
+- **Storage en 4 slots** más `withdrawn` en un mapping aparte, que no cuesta nada hasta el primer retiro, con los deadlines derivados de `createdAt` y timestamps `uint64` ([Storage](docs/ai/DESIGN.md#storage)).
 
 **API e indexador**
 - **Polling con `eth_getLogs` y checkpoint transaccional,** en lugar de una suscripción WebSocket (decisión 18).
@@ -361,7 +396,8 @@ Una línea por decisión; el desarrollo de cada una está en [DESIGN](docs/ai/DE
 - **Guard de cadena:** detecta un Anvil reiniciado y reindexa, o aborta si se configuró así ([Indexador](docs/ai/DESIGN.md#indexador)).
 - **El reloj es el timestamp del último bloque,** no el del servidor (decisión 17).
 - **`ExpiredRecoverable` es el estado derivado** de un `Pending` vencido; `Expired` queda para el final on-chain (decisión 6).
-- **Flags `canCancel`, `canConfirm`, `canReject` y `canRecover`** en cada escrow ([Estado derivado](docs/ai/DESIGN.md#estado-derivado-del-tiempo)).
+- **Flags `canCancel`, `canConfirm`, `canReject`, `canRecover` y `canWithdraw`,** más el titular, lo que le queda por retirar y cada retiro ([Estado derivado](docs/ai/DESIGN.md#estado-derivado-del-tiempo)).
+- **`GET /escrows/:id/max-withdrawal`** encuentra cuánto se puede retirar sin conocer la comisión del token: simula retiros contra el último bloque, como el titular y sin claves ([Endpoints](docs/ai/DESIGN.md#get-escrowsidmax-withdrawal)).
 - **El filtro `status` usa el estado efectivo,** el mismo que se devuelve (decisión 20).
 - **`uint256` como string y paginación `limit`/`offset`,** con `400` ante un valor fuera de rango o un parámetro desconocido (decisión 22, [Endpoints](docs/ai/DESIGN.md#endpoints)).
 - **`/health` informa DB, RPC, último bloque indexado, head y lag,** con `503` si algo falla (decisión 23).
@@ -380,19 +416,20 @@ Una línea por decisión; el desarrollo de cada una está en [DESIGN](docs/ai/DE
 
 - "Si el beneficiario no confirmó **ni canceló**" se lee como "ni rechazó": el beneficiario no cancela (decisión 4).
 - "La operación queda cancelada" al vencer es coloquial: el estado es `Expired` (decisión 5).
-- El balance del contrato es **mayor o igual** a la suma de los pendientes, no igual: alguien puede donarle tokens (decisión 8).
+- El balance del contrato es **mayor o igual** a la suma de los saldos de los escrows, no igual: alguien puede donarle tokens (decisión 8).
 - Solo el enviador recupera un escrow vencido, como dice la tabla (decisión 14).
-- Un escrow tiene un solo monto, el recibido (decisión 21).
+- Los "montos" de un escrow son lo recibido, lo retirado y lo que queda, más lo debitado y lo recibido en cada retiro (decisión 21).
 - "Vencer" en la demo es avanzar el tiempo, mostrar `ExpiredRecoverable` y recién ahí recuperar (decisión 24).
 - No hay reorgs más profundos que las confirmaciones configuradas (decisión 19).
-- Los tokens se comportan como ERC-20: rebasing y tokens que debitan más que el monto no están soportados ([Limitaciones](docs/ai/DESIGN.md#limitaciones-conocidas)).
+- Los tokens informan sus balances honestamente: rebasing y quemas administrativas no están soportados ([Limitaciones](docs/ai/DESIGN.md#limitaciones-conocidas)).
 
 ## Limitaciones conocidas
 
 Detalle en [DESIGN](docs/ai/DESIGN.md#limitaciones-conocidas) y en la [revisión de seguridad](docs/security.md). Todas las de tokens afectan solo a los escrows de ese token.
 
-- **Blacklist o pausa del token** (USDC, USDT): si alcanzan al enviador o al contrato, los fondos quedan trabados hasta que el token los libere.
-- **Tokens que debitan más que el monto** (fee cobrada aparte, rebasing negativo): los últimos escrows de ese token quedan cortos.
+- **Blacklist o pausa del token** (USDC, USDT): el escrow se resuelve igual, pero si alcanzan al titular o al contrato, el retiro queda trabado hasta que el token lo libere.
+- **Tokens que cobran la comisión aparte:** ya no se llevan el respaldo de otros escrows, pero el titular tiene que retirar menos, para que la comisión entre en su saldo, y queda un resto mínimo.
+- **Rebasing negativo o quema administrativa:** bajan el balance fuera de una transferencia, y los últimos escrows de ese token quedan cortos.
 - **Donaciones directas al contrato:** no se pagan nunca y quedan trabadas.
 - **Carrera entre 0 y 2 h:** enviador y beneficiario pueden adelantarse; el contrato garantiza que solo una resolución tenga efecto.
 - **Reorgs más profundos que N:** fuera del modelo.
@@ -402,7 +439,7 @@ Detalle en [DESIGN](docs/ai/DESIGN.md#limitaciones-conocidas) y en la [revisión
 Detalle en [DESIGN](docs/ai/DESIGN.md#qué-mejoraría-con-más-tiempo).
 
 - **Owner limitado a la creación:** pausar nuevos escrows y una whitelist de tokens, sin tocar los existentes.
-- **Patrón pull** opcional, contra las blacklists.
+- **`withdraw(to)`,** con un destino elegido por el titular, contra su propia blacklist.
 - **Rollback de reorgs por `blockHash`,** para indexar sin esperar confirmaciones, o el tag `finalized`.
 - **`createWithPermit`** (EIP-2612).
 - **Webhooks o SSE** con outbox transaccional.

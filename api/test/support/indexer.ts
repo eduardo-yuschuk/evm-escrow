@@ -34,8 +34,8 @@ export async function catchUp(context: IndexerContext): Promise<void> {
 
 /**
  * Checks the projection against the chain, which is the oracle: the stored events are exactly the
- * contract logs, and each escrow row matches `getEscrow` plus the transactions and timestamps of
- * its logs.
+ * contract logs, each escrow row matches `getEscrow` plus the transactions and timestamps of its
+ * logs, and the withdrawals are exactly the EscrowWithdrawn logs.
  */
 export async function expectProjectionMatchesChain(
   pool: Pool,
@@ -67,10 +67,25 @@ export async function expectProjectionMatchesChain(
   }
   const createdTx = new Map<bigint, Hash>();
   const resolution = new Map<bigint, { tx: Hash; at: bigint | undefined }>();
+  const withdrawals = [];
   for (const log of logs) {
     const tx = log.transactionHash.toLowerCase() as Hash;
-    if (log.eventName === "EscrowCreated") createdTx.set(log.args.id, tx);
-    else resolution.set(log.args.id, { tx, at: timestamps.get(log.blockNumber) });
+    const at = timestamps.get(log.blockNumber);
+    if (log.eventName === "EscrowCreated") {
+      createdTx.set(log.args.id, tx);
+    } else if (log.eventName === "EscrowWithdrawn") {
+      withdrawals.push({
+        tx_hash: tx,
+        log_index: log.logIndex,
+        escrow_id: String(log.args.id),
+        debited: String(log.args.debited),
+        received: String(log.args.received),
+        block_number: String(log.blockNumber),
+        withdrawn_at: String(at),
+      });
+    } else {
+      resolution.set(log.args.id, { tx, at });
+    }
   }
 
   const count = await client.readContract({
@@ -94,6 +109,7 @@ export async function expectProjectionMatchesChain(
       beneficiary: escrow.beneficiary.toLowerCase(),
       token: escrow.token.toLowerCase(),
       amount: String(escrow.amount),
+      withdrawn: String(escrow.withdrawn),
       created_at: String(escrow.createdAt),
       cancel_deadline: String(escrow.cancelDeadline),
       expires_at: String(escrow.expiresAt),
@@ -104,9 +120,15 @@ export async function expectProjectionMatchesChain(
     });
   }
   const escrows = await pool.query(
-    `SELECT id, sender, beneficiary, token, amount, created_at, cancel_deadline, expires_at, status,
-            created_tx, resolved_tx, resolved_at
+    `SELECT id, sender, beneficiary, token, amount, withdrawn, created_at, cancel_deadline,
+            expires_at, status, created_tx, resolved_tx, resolved_at
      FROM escrows ORDER BY id`,
   );
   expect(escrows.rows).toEqual(expected);
+
+  const storedWithdrawals = await pool.query(
+    `SELECT tx_hash, log_index, escrow_id, debited, received, block_number, withdrawn_at
+     FROM withdrawals ORDER BY block_number, log_index`,
+  );
+  expect(storedWithdrawals.rows).toEqual(withdrawals);
 }

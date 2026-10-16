@@ -1,9 +1,11 @@
 {
-  "cancel": "48971",
-  "confirm": "51026",
-  "confirm (beneficiary without balance)": "68126",
+  "cancel": "28904",
+  "confirm": "30953",
   "createEscrow": "141000",
   "createEscrow (first escrow of the contract)": "175200",
-  "recoverExpired": "49018",
-  "reject": "50998"
+  "recoverExpired": "28951",
+  "reject": "30931",
+  "withdraw": "75046",
+  "withdraw (beneficiary without balance)": "92146",
+  "withdraw (second part)": "57946"
 }

@@ -1,12 +1,14 @@
 import type { FastifyInstance } from "fastify";
-import { isAddress, maxUint256, type Address } from "viem";
+import { getAddress, isAddress, maxUint256, type Address } from "viem";
 import { z } from "zod";
 
+import type { ChainClient } from "../chain.js";
 import type { ChainClock } from "../clock.js";
 import type { Pool } from "../db/pool.js";
 import { HttpError, parseInput } from "./errors.js";
-import { findEscrow, listEscrows } from "./queries.js";
+import { findContractAddress, findEscrow, listEscrows } from "./queries.js";
 import { EFFECTIVE_STATUSES, toView } from "./view.js";
+import { maxWithdrawal } from "./withdrawal.js";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
@@ -65,13 +67,45 @@ async function fromDatabase<T>(query: Promise<T>): Promise<T> {
 
 export function escrowRoutes(
   app: FastifyInstance,
-  { pool, clock }: { pool: Pool; clock: ChainClock },
+  { pool, client, clock }: { pool: Pool; client: ChainClient; clock: ChainClock },
 ): void {
   app.get("/escrows/:id", async (request) => {
     const { id } = parseInput(z.object({ id: idSchema }), request.params);
     const [escrow, now] = await Promise.all([fromDatabase(findEscrow(pool, id)), chainNow(clock)]);
     if (!escrow) throw new HttpError(404, `Escrow ${id.toString()} not found`);
     return toView(escrow, now);
+  });
+
+  // The largest transferAmount the holder can withdraw now, found by simulating withdrawals against
+  // the latest block. Reads the escrow from the chain: the projection may lag behind.
+  app.get("/escrows/:id/max-withdrawal", async (request) => {
+    const { id } = parseInput(z.object({ id: idSchema }), request.params);
+    const escrow = await fromDatabase(findContractAddress(pool));
+    if (!escrow) throw new HttpError(503, "The indexer has not started yet");
+    let result;
+    try {
+      result = await maxWithdrawal(client, escrow, id);
+    } catch (error) {
+      throw new HttpError(503, "Cannot simulate the withdrawal against the chain", {
+        cause: error,
+      });
+    }
+    if (!result) throw new HttpError(404, `Escrow ${id.toString()} not found`);
+    // Nothing passes, and not because of a fee: e.g. the token blocks the holder.
+    if (result.transferAmount === 0n && result.failure && result.failure.debited === undefined) {
+      throw new HttpError(
+        409,
+        `A withdrawal from escrow ${id.toString()} reverts with any amount: ${result.failure.reason}`,
+      );
+    }
+    return {
+      id: id.toString(),
+      holder: result.holder && getAddress(result.holder),
+      withdrawable: result.withdrawable.toString(),
+      transferAmount: result.transferAmount.toString(),
+      received: result.received.toString(),
+      blockNumber: Number(result.blockNumber),
+    };
   });
 
   app.get("/escrows", async (request) => {

@@ -101,21 +101,22 @@ Los servicios de herramientas usan `profiles`, así que `docker compose up` no l
 ## Ejecución y tests
 
 - **Código montado.** `forge` y `npm` montan el código del host, así que corren sobre la copia de trabajo actual sin reconstruir imágenes.
-- **Tests de la API** (`api/test/`). Los unitarios cubren el proyector y `toView`. Los de integración corren contra Anvil y Postgres reales, sin tocar el stack principal:
+- **Tests de la API** (`api/test/`). Los unitarios cubren el proyector, `toView` y la búsqueda del retiro máximo, contra modelos de token con un oráculo independiente. Los de integración corren contra Anvil y Postgres reales, sin tocar el stack principal:
   - **Anvil propio.** Cada archivo levanta un Anvil efímero en un puerto libre, con el binario incluido en la imagen, y deploya con el bytecode generado.
   - **Schema propio.** Cada archivo crea un schema en la base `escrow_test` del servicio `postgres` y lo usa por `search_path`, así los archivos corren en paralelo.
-  - **Oráculo: la cadena.** Los eventos guardados tienen que ser exactamente los logs del contrato. Cada fila de `escrows` tiene que coincidir con `getEscrow`, más las transacciones y los timestamps de sus logs.
+  - **Oráculo: la cadena.** Los eventos guardados tienen que ser exactamente los logs del contrato. Cada fila de `escrows` tiene que coincidir con `getEscrow`, más las transacciones y los timestamps de sus logs, y las de `withdrawals`, con los logs de `EscrowWithdrawn`.
+  - **Un token con comisión aparte.** Con el token de prueba, lo que un retiro saca del contrato y lo que recibe el titular coinciden, así que un test los confundiría sin notarlo. Un test deploya `FeeOnTopERC20` para que difieran.
   - **Kill real.** Un proceso indexador (`MODE=indexer`) se mata con SIGKILL a mitad de camino y se reanuda. Un trigger, además, hace fallar un batch después de que guardó sus eventos, para comprobar que la transacción no deja nada.
   - **HTTP.** Los endpoints se prueban con `fastify.inject`, sin abrir puertos. Los límites de tiempo se prueban al segundo, con `evm_setNextBlockTimestamp`.
-  - **Mutaciones.** Se comprobó que los tests detectan 19 bugs introducidos a mano. El detalle está en la fase 8 del [ROADMAP](ROADMAP.md).
+  - **Mutaciones.** Se comprobó que los tests detectan 19 bugs introducidos a mano, y otros 10 en el código de los retiros. El detalle está en las fases 8 y 13 del [ROADMAP](ROADMAP.md).
 - **Fuzz e invariantes.** El handler de invariantes mantiene un modelo de referencia de cada escrow, predice el resultado de cada llamada (éxito o el error exacto) y lo compara con el contrato. Por eso corre con `fail_on_revert = true`. El perfil por defecto hace 256 runs; el perfil `ci` hace 10.000 runs de fuzz y 512 × 100 de invariantes.
 - **Gas.** Cada `forge test` reescribe `contracts/snapshots/EscrowGasTest.json` con el gas de cada operación; los cambios aparecen en el diff. `forge coverage` no lo reescribe, porque compila sin optimizador. Ver [`docs/gas.md`](../gas.md).
 - **Dependencias.** La primera vez, o cuando cambia el lockfile, el entrypoint instala las dependencias desde el contenedor en `api/node_modules/` y `contracts/dependencies/`. Las dos carpetas están ignoradas por git.
 - **Permisos.** Los servicios `forge` y `npm` arrancan como root y el entrypoint baja, con `setpriv`, al dueño del código montado. Así los archivos generados quedan del usuario del host con Docker clásico, rootless o Docker Desktop, sin configurar nada.
 - **Demo** ([`api/scripts/demo.ts`](../../api/scripts/demo.ts)). Manda las transacciones con viem desde las cuentas 0 y 1 de Anvil, que el deploy ya fondeó, así que no necesita mintear. Fuera de Anvil, en [Sepolia](#sepolia) o [Monad testnet](#monad-testnet), usa las cuentas de `SENDER_PRIVATE_KEY` y `BENEFICIARY_PRIVATE_KEY` y mintea los tokens que le faltan.
   - El vencimiento se simula con `evm_increaseTime` (el `ttl` del archivo de deploy) y `evm_mine`: la API informa `ExpiredRecoverable` mientras el contrato sigue diciendo `Pending`.
-  - Cada escrow se crea justo antes de su acción, y el de vencimiento va al final, porque avanzar el tiempo del nodo afecta a todos los escrows a la vez.
-  - **Smoke test.** Después de cada transacción espera a que la API la refleje: que exista el escrow, que tenga `resolvedTx` o que su `now` haya alcanzado el bloque nuevo. Recién ahí compara la vista completa, así un valor equivocado falla enseguida, con cada campo distinto, y no al vencer la espera de 30 s. También verifica que los fondos lleguen a quien corresponde. Cualquier diferencia termina con código 1.
+  - Cada escrow se crea justo antes de su acción, y el de vencimiento va al final, porque avanzar el tiempo del nodo afecta a todos los escrows a la vez. Después de cada resolución, el titular retira todo, con `minReceived` igual al monto.
+  - **Smoke test.** Después de cada transacción espera a que la API la refleje: que exista el escrow, que tenga `resolvedTx` o un retiro, o que su `now` haya alcanzado el bloque nuevo. Recién ahí compara la vista completa, así un valor equivocado falla enseguida, con cada campo distinto, y no al vencer la espera de 30 s. También verifica los saldos: que resolver no mueva tokens y que el retiro le llegue entero al titular. Cualquier diferencia termina con código 1.
   - **Confirmaciones.** Con `CONFIRMATIONS` > 0, mina esa cantidad de bloques después de cada transacción. Si no, con el automine de Anvil el indexador no la vería nunca.
   - **Fuera de Anvil** (el chain id del archivo de deploy no es `31337`): no mina ni mueve el tiempo. La red produce los bloques, y para el vencimiento espera un bloque con timestamp a partir de `expiresAt`. La espera máxima por paso suma 24 s por confirmación, y antes de empezar verifica que las dos cuentas tengan ETH para el gas.
   - **Código actual sin montar `./api`.** El servicio `demo` usa la imagen `api:dev` con `pull_policy: build`: compose la reconstruye en cada `run`, en 1,6 s si no cambió nada, y no instala nada en el host.
@@ -135,6 +136,7 @@ function cancel(uint256 id) external;          // sender, t <  createdAt + CANCE
 function confirm(uint256 id) external;         // beneficiary, t <  createdAt + TTL
 function reject(uint256 id) external;          // beneficiary, t <  createdAt + TTL
 function recoverExpired(uint256 id) external;  // sender, t >= createdAt + TTL
+function withdraw(uint256 id, uint256 transferAmount, uint256 minReceived) external;  // titular, ya resuelto
 function getEscrow(uint256 id) external view returns (EscrowView memory);
 function escrowCount() external view returns (uint256);   // ids válidos: 1..escrowCount()
 function CANCEL_WINDOW() external view returns (uint64);
@@ -166,7 +168,41 @@ stateDiagram-v2
     Pending --> Expired: recoverExpired (sender, t >= +7d)
 ```
 
-`enum Status { None, Pending, Released, Rejected, CancelledBySender, Expired }`. El `None = 0` distingue un id inexistente de uno real. Todos los estados distintos de `Pending` son finales.
+`enum Status { None, Pending, Released, Rejected, CancelledBySender, Expired }`. El `None = 0` distingue un id inexistente de uno real. Todos los estados distintos de `Pending` son finales: los retiros no cambian el estado.
+
+### Retiros
+
+Resolver no mueve tokens: fija el estado final y asigna el saldo del escrow a su **titular**. El titular es el beneficiary si el estado es `Released`, y el sender en los otros tres. Después, el titular lo saca con `withdraw`, que es la **única salida de tokens** del contrato.
+
+```solidity
+function withdraw(uint256 id, uint256 transferAmount, uint256 minReceived) external;
+```
+
+- **Saldo del escrow:** `amount - withdrawn`. `withdrawn` suma lo que cada retiro sacó realmente del contrato, no lo que pidió.
+- **Retiros parciales.** El titular puede retirar varias veces, mientras quede saldo.
+- **Chequeos, en orden:** que el escrow exista (`EscrowNotFound`) y esté resuelto (`NotResolved`), que llame el titular (`NotHolder`) y que `0 < transferAmount <= saldo` (`ZeroAmount`, `AmountExceedsBalance`).
+- **Mide dos balances alrededor de la transferencia:**
+  - **Lo que bajó el balance del contrato** no puede superar el saldo del escrow (`ExcessiveDebit`). Ese débito, comisión incluida, se suma a `withdrawn`.
+  - **Lo que subió el balance del titular** no puede ser menor que `minReceived` (`ReceivedBelowMinimum`).
+- **Por qué medir el débito.** Medir lo recibido al crear protege contra una comisión descontada del monto, pero no contra una cobrada aparte, al que paga:
+
+  | Transferencia de 100 con comisión del 1 % | Débito al que paga | Crédito al destinatario |
+  | --- | --- | --- |
+  | Descontada del monto (fee-on-transfer) | 100 | 99 |
+  | Cobrada aparte, al que paga | 101 | 100 |
+
+  Con la segunda, pagar 100 saca 101 del contrato, y el 1 extra sale del respaldo de otro escrow del mismo token. Ahora ese retiro revierte, y el titular pide menos: con una comisión de `bps` puntos básicos, lo máximo es `saldo × 10.000 / (10.000 + bps)`, redondeado hacia abajo. Para un saldo de 100 y el 1 %, unos 99,0099. El resto, unas pocas unidades mínimas, queda en el contrato.
+- **Si no se conoce la comisión,** se simula: `ExcessiveDebit` informa lo que el token habría debitado, y con eso se ajusta el monto. La API lo hace con [`GET /escrows/:id/max-withdrawal`](#get-escrowsidmax-withdrawal).
+- **El límite es el saldo del escrow, no lo que tiene el contrato:** ni el respaldo de otros escrows ni las donaciones pagan la comisión de un retiro.
+- **Por qué `minReceived`.** La comisión de salida es del token y puede cambiar entre la creación y el retiro, incluso hasta el 100 %. Con `minReceived`, el titular fija cuánto acepta recibir. Lo fija siempre quien cobra: en un `reject`, el sender, en su propio retiro, y no el beneficiary que rechaza.
+- **Escribe después de transferir,** como `createEscrow`: lo que se carga al escrow es lo que midió, así que no puede seguir CEI. Lo protege `nonReentrant`.
+- **Un `balanceOf` que se mueve al revés revierte.** Si el balance del contrato subiera o el del titular bajara durante la transferencia, la resta revierte. Ningún token que informe sus balances honestamente lo hace.
+- **Siempre al titular, sin `to`.** La blacklist del titular sigue trabando sus fondos: ver [Limitaciones](#limitaciones-conocidas) y [mejoras](#qué-mejoraría-con-más-tiempo).
+- **Alternativas evaluadas,** por **decisión del autor:**
+  - **Push con control de débito:** cada resolución paga todo y revierte si el débito supera el monto. Protege a los otros escrows, pero con un token que cobra aparte el escrow queda trabado: ninguna resolución puede completarse.
+  - **Push con respaldo:** la resolución intenta pagar todo y, si el débito excede el saldo, deshace solo el pago con `try`/`catch` sobre una llamada al propio contrato y deja el saldo para `withdraw`. Es una transacción con tokens normales y respeta la tabla del enunciado, pero es más complejo de auditar.
+  - **Pull puro, el elegido:** una sola salida de fondos, con todos los controles en un lugar. Cuesta una transacción más por escrow.
+  - **Sin variantes combinadas** como `confirmAndWithdraw`: el autor no les vio valor por sí mismas.
 
 ### Eventos
 
@@ -179,12 +215,14 @@ event EscrowCancelled(uint256 indexed id);
 event EscrowReleased(uint256 indexed id);
 event EscrowRejected(uint256 indexed id);
 event EscrowExpired(uint256 indexed id);
+event EscrowWithdrawn(uint256 indexed id, uint256 debited, uint256 received);
 ```
 
-- `amount` es el monto **realmente recibido** (ver fee-on-transfer).
+- `amount` es el monto **realmente recibido** (ver fee-on-transfer): lo máximo que los retiros pueden sacar del contrato por ese escrow.
 - `cancelDeadline` y `expiresAt` son el **primer instante inválido** de su ventana, no el último válido. Las comparaciones son `<` y `>=`.
-- Los eventos de resolución solo llevan `id`. El destino de los fondos se deduce del tipo de evento, y el timestamp y el hash salen del log o del bloque. La API reconstruye todo sin leer storage.
-- **Trade-off:** agregar el destinatario o el monto a los eventos de resolución le ahorraría trabajo al indexador, pero cuesta gas en cada resolución. Se prefirió que el indexador haga el cruce con los datos de `EscrowCreated`.
+- Los eventos de resolución solo llevan `id`. El titular se deduce del tipo de evento, y el timestamp y el hash salen del log o del bloque. La API reconstruye todo sin leer storage.
+- `EscrowWithdrawn` lleva lo que el retiro sacó del contrato (`debited`) y lo que recibió el titular (`received`). Con `debited`, la API calcula el saldo de cada escrow; `received` puede ser menor (comisión descontada) y `debited` mayor que lo pedido (comisión aparte). El titular no va en el evento: se deduce del estado.
+- **Trade-off:** agregar el titular o el monto a los eventos le ahorraría trabajo al indexador, pero cuesta gas en cada transacción. Se prefirió que el indexador haga el cruce con los datos de `EscrowCreated`.
 
 ### Custom errors
 
@@ -201,6 +239,11 @@ event EscrowExpired(uint256 indexed id);
 | `CancelWindowClosed(id, cancelDeadline)` | cancelar con `t >= cancelDeadline` |
 | `EscrowHasExpired(id, expiresAt)` | confirmar o rechazar con `t >= expiresAt` |
 | `NotExpiredYet(id, expiresAt)` | recuperar con `t < expiresAt` |
+| `NotResolved(id)` | retirar de un escrow `Pending` |
+| `NotHolder(id, caller)` | retira alguien que no es el titular |
+| `AmountExceedsBalance(id, balance, transferAmount)` | pedir más que el saldo del escrow |
+| `ExcessiveDebit(id, balance, debited)` | el token sacó del contrato más que el saldo del escrow (comisión aparte) |
+| `ReceivedBelowMinimum(id, received, minReceived)` | el titular recibió menos que `minReceived` (comisión descontada) |
 
 El error de vencimiento no puede llamarse `EscrowExpired` porque colisiona con el nombre del evento.
 
@@ -208,15 +251,16 @@ El error de vencimiento no puede llamarse `EscrowExpired` porque colisiona con e
 
 La revisión punto por punto, con la evidencia de cada uno, está en [`docs/security.md`](../security.md).
 
-- **Checks-effects-interactions.** Al resolver, el orden es: chequeos, estado final, evento y recién al final la transferencia.
-  - Además, todas las funciones que mueven fondos son `nonReentrant`, con `ReentrancyGuardTransient` (transient storage de Cancun, más barato que un slot de storage). Así se cubren tokens con hooks (ERC-777) y tokens maliciosos.
-  - `createEscrow` es la excepción a CEI: necesita transferir **antes** de escribir el escrow para medir lo recibido. La protege `nonReentrant`.
+- **Checks-effects-interactions.** Las resoluciones ya no llaman al token: chequeos, estado final y evento.
+  - Las seis funciones que cambian estado son `nonReentrant`, con un solo `ReentrancyGuardTransient` (transient storage de Cancun, más barato que un slot de storage). Así, mientras corre una llamada al token, no se ejecuta nada del contrato. Cubre tokens con hooks (ERC-777) y tokens maliciosos.
+  - Las resoluciones conservan el guard aunque no hagan llamadas externas: un hook no puede resolver escrows en medio de un depósito o un retiro. Cuesta unos 500 de gas.
+  - `createEscrow` y `withdraw` son las excepciones a CEI: escriben **después** de transferir, porque guardan lo que midieron. Las protege `nonReentrant`.
 - **`SafeERC20`.** Soporta tokens que no devuelven `bool` (USDT).
   - Revierte con `SafeERC20FailedOperation(token)` si el token es una dirección sin código: cuando la llamada no devuelve datos, exige `extcodesize(token) > 0` (OZ 5.7, `SafeERC20._safeTransferFrom`). Verificado con un test contra un EOA.
   - Aun así, `createEscrow` valida `token.code.length > 0` antes de cualquier llamada externa. El motivo no es seguridad sino claridad: el `balanceOf` previo revertiría sin motivo (retorno vacío imposible de decodificar), y así el error es `InvalidToken(token)`, que también cubre `address(0)`.
-- **Sin owner, sin pausa, sin upgrade, sin `rescue`.** No existe ninguna ruta por la que alguien que no sea el sender o el beneficiary mueva fondos de un escrow, y cada uno solo dentro de su ventana.
+- **Sin owner, sin pausa, sin upgrade, sin `rescue`.** Los fondos solo salen por `withdraw`, hacia el titular de un escrow resuelto y nunca por más que su saldo. Nadie más que el sender o el beneficiary puede resolver, y cada uno solo dentro de su ventana.
 - **Ids secuenciales empezando en 1,** asignados por el contrato. No hay ids elegidos por el que llama, así que no se pueden ocupar ids ajenos por front-running.
-- **Fee-on-transfer.** Se mide `balanceOf` antes y después del `transferFrom` y se guarda lo recibido. Un escrow nunca puede pagar más de lo que aportó, así que no puede drenar fondos de otros escrows del mismo token.
+- **Tokens con comisión.** Se mide `balanceOf` antes y después del `transferFrom` y se guarda lo recibido. Cada retiro mide también lo que salió del contrato, comisión incluida, y nunca supera el saldo del escrow. Un escrow nunca puede sacar más de lo que aportó, así que no puede drenar fondos de otros escrows del mismo token, cobre el token la comisión descontada o aparte. Ver [Retiros](#retiros).
 
 ### Guard de reentrada: `ReentrancyGuardTransient`
 
@@ -229,13 +273,13 @@ Da la misma protección que `ReentrancyGuard`, pero guarda el flag en transient 
 | Gas medido por llamada | +5.207 | +502 |
 | Gas neto con refund | ~2.400 (refund de 2.800, con tope del 20 % del gas de la transacción) | ~500 |
 
-**Ahorro:** entre ~1.900 y ~4.700 de gas en cada `createEscrow`, `cancel`, `confirm`, `reject` y `recoverExpired`.
+**Ahorro:** entre ~1.900 y ~4.700 de gas en cada `createEscrow`, `cancel`, `confirm`, `reject`, `recoverExpired` y `withdraw`.
 
 Medición: una función mínima protegida por cada guard, contra un contrato frío, comparada con la misma función sin guard (`forge test --isolate`, solc 0.8.37, optimizer de 200 runs).
 
 ### Storage
 
-Los deadlines no se guardan: se derivan de `createdAt` y las `immutable`, y `getEscrow` los devuelve calculados. Layout de 4 slots:
+Los deadlines no se guardan: se derivan de `createdAt` y las `immutable`, y `getEscrow` los devuelve calculados. Layout de 4 slots en `_escrows`:
 
 | Slot | Campos |
 | --- | --- |
@@ -243,6 +287,9 @@ Los deadlines no se guardan: se derivan de `createdAt` y las `immutable`, y `get
 | 1 | `beneficiary` (20 B) |
 | 2 | `token` (20 B) |
 | 3 | `amount uint256` |
+
+- **`withdrawn` va en un mapping aparte,** `_withdrawn`, y no en el struct. Escribir el struct completo al crear guardaría también su cero, en un slot frío: 2.245 de gas más en cada `createEscrow`, medido. Aparte, queda en cero sin costo hasta el primer retiro, que lo escribe de cero a no-cero.
+- **Se descartó guardar el saldo en `amount` y descontarlo en cada retiro,** que ahorraría esa escritura: `getEscrow` dejaría de devolver lo depositado, y los datos de creación dejarían de ser fijos.
 
 Se descartó empaquetar `amount` como `uint96` junto a `beneficiary` para bajar a 3 slots. Limita los montos a unos 7.9e28 unidades, y hay tokens con supply mayor (por ejemplo, de 18 decimales y cientos de billones de unidades). El gas medido, incluida esta variante (−22.059 en `createEscrow`), está en [`docs/gas.md`](../gas.md).
 
@@ -273,7 +320,7 @@ Se descartó empaquetar `amount` como `uint96` junto a `beneficiary` para bajar 
   | `DEPLOY_MOCK_TOKEN` | `true` solo en la chain `31337` | Deploya un `MockERC20`. En Anvil, además, le da 1.000.000 de tokens a cada una de las 10 cuentas; en otra cadena no mintea, porque el mint del token de prueba es abierto. Si no se deploya, `token` queda en `0x000…0`. |
 
 - **Dry run:** sin `--broadcast` no escribe el archivo, porque no deployó nada.
-- **ABI tipado para la API:** `docker compose run --rm npm run abi` lee los artefactos de `contracts/out/` y genera [`api/src/generated/contracts.ts`](../../api/src/generated/contracts.ts), con el ABI y el bytecode de `Escrow` y `MockERC20` declarados `as const` para que viem infiera los tipos. El archivo se commitea, así la imagen de la API no compila contratos. Hay que regenerarlo cuando cambia el contrato; CI lo verifica.
+- **ABI tipado para la API:** `docker compose run --rm npm run abi` lee los artefactos de `contracts/out/` y genera [`api/src/generated/contracts.ts`](../../api/src/generated/contracts.ts), con el ABI y el bytecode de `Escrow` y `MockERC20` declarados `as const` para que viem infiera los tipos. También incluye `FeeOnTopERC20` y `BlacklistERC20`, solo para los tests de la API: con el primero, lo que un retiro saca del contrato y lo que recibe el titular difieren, y el segundo bloquea al titular. El archivo se commitea, así la imagen de la API no compila contratos. Hay que regenerarlo cuando cambia el contrato; CI lo verifica.
 
 ### Sepolia
 
@@ -287,6 +334,7 @@ En una testnet no se puede adelantar el reloj del nodo, así que para ver un ven
 - **Deploy:** el mismo `deploy.sh` del stack local, con `--verify` si hay API key de Etherscan, y el mismo chequeo de idempotencia: si el archivo ya describe Sepolia, no deploya.
   - **El gas lo estima el nodo** (`--skip-simulation`, que hace que forge use `eth_estimateGas`). La simulación propia de forge cobra los costos de gas del target de compilación, `cancun`, y Sepolia ya cobra mucho más por crear un contrato: 6.545.373 de gas para el Escrow en lugar de 933.537. El primer deploy real falló por eso, con las dos creaciones sin gas. Se verificó contra Sepolia que el hash calculado del header (`vm.getRawBlockHeader`) coincide con el real, que es lo que compara el guard de cadena.
 - **Demo:** la misma de Anvil, en modo red real. Con 12 confirmaciones cada paso tarda unos 2,5 minutos, y la corrida completa, cerca de media hora: la primera tardó 29 minutos (salida en el [README](../../README.md#sepolia)).
+- **El contrato deployado es la versión anterior a los retiros:** paga en la misma llamada que resuelve y no tiene `withdraw`. La API actual lo indexa, pero muestra `canWithdraw` en escrows que ya se pagaron, y la demo actual falla al retirar. Hay que deployar de nuevo: ver la fase 13 del [ROADMAP](ROADMAP.md).
 
 ### Monad testnet
 
@@ -314,6 +362,7 @@ Es la misma demo en vivo que en [Sepolia](#sepolia), pero tarda minutos y no med
   - Los dos contratos quedaron verificados en Sourcify con `exact_match`.
   - El deploy costó 0,193 MON. Los recibos informan como gas usado el límite completo, 1,3 veces la estimación: 1.224.242 el Escrow y 668.502 el token. Confirma que Monad cobra el límite.
   - La demo tardó menos de 3 minutos: 159 s del `mint` al `recoverExpired`, unos 6 s por paso.
+- **El contrato deployado es la versión anterior a los retiros,** como en [Sepolia](#sepolia): hay que deployar de nuevo.
 - **No es un deploy permanente:** Monad testnet se reinició desde génesis en diciembre de 2025. Si vuelve a pasar, el guard de cadena hace abortar a la API (`RESET_ON_CHAIN_MISMATCH=false`), y hay que borrar el archivo de deploy y deployar de nuevo.
 
 ## API e indexador
@@ -323,7 +372,7 @@ Es la misma demo en vivo que en [Sepolia](#sepolia), pero tarda minutos y no med
 El código está en [`api/src/indexer/`](../../api/src/indexer/) y el esquema en [`api/migrations/`](../../api/migrations/).
 
 - **Lectura por polling** con `eth_getLogs` en rangos acotados, desde `checkpoint + 1` hasta `head - CONFIRMATIONS`. Se eligió en lugar de una suscripción WebSocket porque permite retomar de forma determinística y no pierde eventos si el socket se corta.
-  - El filtro es la dirección del contrato más los topics de sus 5 eventos.
+  - El filtro es la dirección del contrato más los topics de sus 6 eventos.
   - Los logs se decodifican en modo estricto: uno que no coincide con el ABI es un error. `getLogs` de viem, en cambio, lo descartaría sin avisar.
 - **Atomicidad.** Por cada rango, en **una sola transacción de DB** se insertan los eventos crudos, se aplican a la proyección `escrows` y se avanza el checkpoint. Si el proceso muere a mitad de camino, no queda nada a medias.
   - La transacción bloquea la fila del checkpoint y verifica que no se movió desde que se leyó el rango. Si otro proceso la movió, el rango se descarta y se vuelve a leer.
@@ -331,6 +380,7 @@ El código está en [`api/src/indexer/`](../../api/src/indexer/) y el esquema en
   - La tabla `events` tiene clave primaria `(tx_hash, log_index)`. Los eventos se insertan con `ON CONFLICT DO NOTHING … RETURNING`, y solo los que devuelve, los nuevos, se aplican a la proyección.
   - El proyector, `applyEvent(estado, evento) → mutación`, es una función pura. `EscrowCreated` crea el escrow si no existe, y las resoluciones solo se aplican si sigue `Pending`. El SQL repite las dos guardas.
   - Aplicar el mismo evento dos veces no hace nada. Una resolución de un id desconocido, o de un escrow ya resuelto por otra transacción, no puede pasar en la cadena: se loggea como error y no se aplica.
+  - **Retiros.** Un escrow puede tener varios, así que el proyector no distingue uno repetido de uno nuevo: no lo necesita, porque solo recibe los eventos nuevos. Igual, `withdrawals` tiene la misma clave que `events`, y el SQL suma a `withdrawn` solo si insertó la fila. Un retiro de un escrow desconocido, `Pending` o por encima de su saldo no puede pasar en la cadena: se loggea como error y no se aplica.
   - Reprocesar un rango no duplica ni corrompe nada.
 - **Reanudación.** El checkpoint (`last_indexed_block`) vive en Postgres. La primera vez se inicializa con el `startBlock` del [archivo de deploy](#deploy). Se relee en cada vuelta, así que moverlo a mano hacia atrás reprocesa ese rango.
 - **Cambio de cadena.** Anvil es efímero, mientras que Postgres puede conservar datos entre reinicios del stack. Al arrancar hay dos chequeos:
@@ -356,7 +406,8 @@ El código está en [`api/src/indexer/`](../../api/src/indexer/) y el esquema en
 - **Dominios** `address`, `bytes32` y `uint256`: la base rechaza direcciones o hashes que no estén en minúsculas y montos fuera del rango de `uint256`. Los filtros de la API comparan direcciones en minúsculas.
 - **Tablas.**
   - `events`: un registro por log, con `block_number`, `block_hash`, `block_timestamp`, `name` y `args` en `jsonb`, donde los `uint256` van como string.
-  - `escrows`: la proyección, con `CHECK` sobre los estados y otro que exige `resolved_tx` y `resolved_at` exactamente cuando el estado es final.
+  - `escrows`: la proyección, con `CHECK` sobre los estados y otro que exige `resolved_tx` y `resolved_at` exactamente cuando el estado es final. `withdrawn` suma lo que sacaron los retiros, con `CHECK` de que no supere `amount` y sea cero mientras `Pending`.
+  - `withdrawals`: un registro por `EscrowWithdrawn`, con lo debitado, lo recibido, el bloque y el timestamp. La agregó la migración `0002`.
   - `indexer_state`: una sola fila con la cadena, el contrato y el checkpoint.
 - **Índices.**
   - `(sender, id)`, `(beneficiary, id)` y `(status, id)` sirven a la vez al filtro y al orden por id del listado.
@@ -375,6 +426,8 @@ El código está en [`api/src/indexer/`](../../api/src/indexer/) y el esquema en
   - `canCancel`: `Pending && now < cancelDeadline`
   - `canConfirm` y `canReject`: `Pending && now < expiresAt`
   - `canRecover`: `Pending && now >= expiresAt`
+  - `canWithdraw`: resuelto y con saldo, sin importar el tiempo
+- **Retiros.** `holder` es quien puede retirar: el beneficiary si `Released`, el sender en los otros tres estados finales y `null` mientras `Pending`. `withdrawable` es lo que todavía puede retirar: `amount - withdrawn` una vez resuelto, y `0` mientras `Pending`.
 - Lo calcula `toView(escrow, now)`, una función pura en `api/src/http/view.ts`. El filtro por estado del listado aplica la misma regla en SQL.
 
 ### Endpoints
@@ -385,6 +438,7 @@ El código está en [`api/src/http/`](../../api/src/http/), con fastify.
 | --- | --- |
 | `400` | id, filtro o paginación inválidos, o un parámetro desconocido en el listado |
 | `404` | Escrow inexistente o ruta desconocida |
+| `409` | En `max-withdrawal`, ningún retiro pasa, y no por una comisión: por ejemplo, el token bloquea al titular |
 | `500` | Error inesperado |
 | `503` | El nodo no responde, así que no hay reloj de cadena, o la DB no responde. En `/health`, servicio degradado |
 
@@ -401,26 +455,32 @@ El código está en [`api/src/http/`](../../api/src/http/), con fastify.
   "beneficiary": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
   "token": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
   "amount": "1000000000000000000",
+  "withdrawn": "0",
+  "withdrawable": "0",
   "createdAt": 1760000000,
   "cancelDeadline": 1760007200,
   "expiresAt": 1760604800,
   "onchainStatus": "Pending",
   "status": "Pending",
+  "holder": null,
   "canCancel": true,
   "canConfirm": true,
   "canReject": true,
   "canRecover": false,
+  "canWithdraw": false,
   "createdTx": "0x…",
   "resolvedTx": null,
   "resolvedAt": null,
+  "withdrawals": [],
   "now": 1760000300
 }
 ```
 
-- `id` y `amount` van como **string**, porque un `uint256` excede `Number.MAX_SAFE_INTEGER`.
+- `id`, `amount`, `withdrawn`, `withdrawable` y los montos de cada retiro van como **string**, porque un `uint256` excede `Number.MAX_SAFE_INTEGER`.
 - Las direcciones se devuelven con checksum EIP-55.
 - Los timestamps son segundos unix, como número. `now` es el timestamp con el que se calcularon el estado y los flags.
-- `createdTx` y `resolvedTx` son los hashes de las dos transacciones que puede tener un escrow.
+- `createdTx` y `resolvedTx` son los hashes de la creación y de la resolución. Cada retiro, en `withdrawals` y en orden de la cadena, lleva el hash de su transacción (`txHash`), su timestamp (`withdrawnAt`), lo que sacó del contrato (`debited`) y lo que recibió el titular (`received`).
+- `withdrawn` y `withdrawals` salen del mismo snapshot de la base, así que coinciden aunque el indexador escriba en el medio.
 - **El id** tiene que ser un entero decimal dentro del rango de `uint256`. Si no, como en `abc`, `-1`, `0x1` o `1e3`, devuelve `400`.
 - Si el escrow no existe, incluido el id `0`, devuelve `404`.
 
@@ -432,8 +492,36 @@ El código está en [`api/src/http/`](../../api/src/http/), con fastify.
   - Un parámetro vacío cuenta como ausente. Así, `/escrows?sender=&beneficiary=&status=`, la forma del enunciado, lista todo.
 - **Paginación.** `limit` va de 1 a 100 y vale 20 por defecto. `offset` vale 0 por defecto. Un valor fuera de rango devuelve `400` en lugar de recortarse. Se ordena por `id` descendente.
 - **Respuesta:** `{ "items": [...], "limit": 20, "offset": 0, "total": 42 }`. Cada item tiene el mismo formato que `/escrows/:id`.
-  - `total` y la página salen del mismo snapshot, una transacción `REPEATABLE READ` de solo lectura, así que coinciden aunque el indexador escriba en el medio.
+  - `total`, la página y sus retiros salen del mismo snapshot, una transacción `REPEATABLE READ` de solo lectura, así que coinciden aunque el indexador escriba en el medio.
 - **`400`** con un `status` o una dirección inválidos, y también con un parámetro desconocido: así, un error de tipeo como `benficiary` no descarta el filtro sin avisar.
+
+#### `GET /escrows/:id/max-withdrawal`
+
+El `transferAmount` más alto que el titular puede retirar ahora, para un token cuya comisión no se conoce. Lo encuentra simulando retiros con `eth_call`, como el titular, sin claves ni gas. El código está en [`api/src/http/withdrawal.ts`](../../api/src/http/withdrawal.ts).
+
+```json
+{
+  "id": "7",
+  "holder": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+  "withdrawable": "1000",
+  "transferAmount": "991",
+  "received": "991",
+  "blockNumber": 42
+}
+```
+
+El ejemplo es un escrow de 1.000 de un token que le cobra al que paga un 1 % aparte: 991 más su comisión, 9, es exactamente 1.000, y 992 más 9 ya no entra.
+
+- **Lee la cadena, no la proyección.** El escrow, el balance del token y cada simulación se leen en el mismo bloque, el último: `blockNumber`. La proyección va `CONFIRMATIONS` bloques atrás, y una simulación tiene que correr contra el estado que describe. La dirección del contrato sale de `indexer_state`, así que también funciona con `MODE=api`.
+- **`received`** es lo que recibiría el titular por `transferAmount`: el `minReceived` para retirar, o una base para fijarlo con margen.
+- **Cómo busca.** Simula `withdraw(id, monto, 2²⁵⁶ − 1)`. Con ese mínimo imposible, un monto que pasa el control de débito siempre revierte con `ReceivedBelowMinimum`, que trae lo recibido. Uno que no pasa revierte con `ExcessiveDebit`, que trae lo debitado.
+  - Empieza por todo el saldo. Si falla con lo debitado, prueba `monto × saldo / debitado`, que con una comisión proporcional o fija cae en el máximo o justo debajo. Desde ahí sube de a una unidad, duplicando el paso mientras pase. Para el 1 % sobre 100 tokens son 5 simulaciones.
+  - Si el contrato no tiene con qué pagar la comisión, el token revierte antes que el escrow. Con un token de OpenZeppelin, el error `ERC20InsufficientBalance` también permite deducir lo debitado.
+  - Si falla sin informar lo debitado, prueba el monto mínimo, para saber enseguida si alguno pasa, y después bisecta.
+  - Lo debitado solo elige el próximo candidato: cada respuesta se verifica simulando. Supone que, si un monto pasa, todo monto menor también pasa, lo que vale para cualquier comisión que crezca con el monto.
+- **Respuestas.** `transferAmount` es `0` si el escrow sigue `Pending` (con `holder` en `null`), si ya se retiró todo o si solo queda un resto que no alcanza para pagar la comisión. Si ningún monto pasa por otro motivo, como un titular bloqueado, responde `409` con el error. `404` si el escrow no existe, y `503` sin nodo, sin base o antes de que arranque el indexador.
+- **Costo:** cada simulación es un `eth_call`. Con un token sin comisión es 1, con una comisión proporcional pocas, y bisectando, hasta una por bit del saldo. El tope es 128, que alcanza para el máximo exacto de cualquier saldo menor a 2¹²⁸. Sin rate limiting, es el endpoint que más carga le pone al nodo: ver [mejoras](#qué-mejoraría-con-más-tiempo).
+- **La simulación no garantiza la ejecución.** Si el estado o la comisión cambian antes de que se mine el retiro, puede revertir con `ExcessiveDebit` sin mover nada, o con `ReceivedBelowMinimum` gracias a `minReceived`. En los dos casos se vuelve a consultar.
 
 #### `GET /health`
 
@@ -458,7 +546,7 @@ El código está en [`api/src/http/`](../../api/src/http/), con fastify.
 - **`MODE=api`** no necesita `DEPLOYMENTS_FILE` ni corre el guard: solo lee. Tiene que usar el mismo `CONFIRMATIONS` que el indexador para interpretar el lag.
 - **Fallas.** Si un componente falla de forma irrecuperable, se detiene el otro y el proceso sale con código 1. Una API sin indexador seguiría sirviendo datos cada vez más viejos.
 - **Postgres colgado.** Obtener una conexión y cada query tienen un timeout de 3 s del lado del cliente. Sin él, con Postgres pausado, una request quedaba colgada para siempre y SIGTERM no terminaba el proceso hasta que volvía la DB.
-  - Los endpoints de escrows responden `503` a los 3 s. El listado puede tardar 6 s, porque si la transacción ya estaba abierta también vence el `ROLLBACK`.
+  - Los endpoints de escrows responden `503` a los 3 s, o a los 6 s si la transacción del snapshot ya estaba abierta, porque también vence el `ROLLBACK`.
   - El indexador reintenta con backoff, como con cualquier falla de DB.
   - El peor caso entra en los 10 s que espera `docker compose stop` antes del SIGKILL.
 - **Apagado.** Con SIGTERM, la API deja de aceptar requests, responde `503` a las nuevas y espera a las que están en curso. Las que esperan al nodo terminan enseguida, porque se cancelan las requests al RPC. Las que esperan a la DB terminan, como mucho, cuando vence su timeout.
@@ -490,21 +578,21 @@ Se validan con zod al arrancar. Una variable vacía toma el default y un valor i
 | 4 | "Si el beneficiario no confirmó **ni canceló**" | Se lee "ni rechazó": el beneficiary no cancela. |
 | 5 | "La operación queda **cancelada**" al vencer, pero el estado es `Expired` | El estado es `Expired`. "Cancelada" se toma en sentido coloquial. |
 | 6 | "Vencido" designa dos cosas | `ExpiredRecoverable` es el estado derivado en la API y `Expired` el final on-chain. |
-| 7 | "Cualquier ERC-20", pero fee-on-transfer figura como opcional | Se registra el monto **recibido**. Ignorarlo permitiría drenar otros escrows. |
-| 8 | El invariante del enunciado dice que el balance "iguala" la suma de pendientes | Es falso con donaciones directas al contrato. Se testea `balanceOf(token) >= Σ amount pendientes`, por token. |
+| 7 | "Cualquier ERC-20", pero fee-on-transfer figura como opcional | Se registra el monto **recibido**, y cada retiro mide lo que **sale** del contrato. Ignorar cualquiera de los dos permitiría drenar otros escrows. Ver [Retiros](#retiros). |
+| 8 | El invariante del enunciado dice que el balance "iguala" la suma de pendientes | Es falso con donaciones directas al contrato. Y con retiros, lo que se debe es el saldo de cada escrow, pendiente o resuelto sin retirar. Se testea `balanceOf(token) >= Σ (amount − withdrawn)`, por token. |
 | 9 | "Ni siquiera el owner" supone un owner | **No hay owner:** el contrato no necesita administración para funcionar, y así ninguna garantía depende de la buena fe de alguien. Se evaluó un owner que solo controle la creación (pausar nuevos escrows y una whitelist de tokens, sin poder tocar los existentes) y quedó como [mejora](#qué-mejoraría-con-más-tiempo): acotaría los riesgos de tokens no estándar, a cambio de superficie y de confianza en el owner. |
 | 10 | Cómo se genera el `id` | Contador secuencial que arranca en 1. |
 | 11 | Qué devuelve `getEscrow` para un id inexistente | Revierte con `EscrowNotFound`. |
 | 12 | No se valida el token | Se exige `token != address(0)` y que tenga código. |
 | 13 | Ventanas `immutable` sin validar | El constructor exige `0 < cancelWindow < ttl`. |
 | 14 | Quién puede recuperar un escrow vencido | Solo el sender, según la tabla. |
-| 15 | Cómo se transfieren los fondos al resolver | **Push:** se transfiere directo en la misma llamada, fiel a la tabla. Ver limitación de blacklists. |
-| 16 | Datos de los eventos de resolución | Alcanza con `id`. El timestamp y el tx hash salen del log. |
+| 15 | Cómo se transfieren los fondos al resolver | **Pull,** por **decisión del autor:** resolver asigna el saldo al titular, y el titular lo saca con `withdraw`. Al principio era push, fiel a la tabla, pero un token que cobra la comisión aparte se llevaba el respaldo de otros escrows. "Fondos van al beneficiario" se cumple en dos pasos. Ver [Retiros](#retiros). |
+| 16 | Datos de los eventos de resolución | Alcanza con `id`. El timestamp y el tx hash salen del log. `EscrowWithdrawn` suma lo debitado y lo recibido. |
 | 17 | Contra qué reloj se calcula el estado derivado | Timestamp del último bloque de la cadena. |
 | 18 | "Suscribirse" contra "retomar sin perder eventos" | Polling con `getLogs` y checkpoint transaccional. |
 | 19 | Estrategia de reorgs | N confirmaciones configurables: 0 en Anvil, alrededor de 12 en testnet. |
 | 20 | `status=` filtra el estado guardado o el derivado | El efectivo, el mismo que se devuelve. |
-| 21 | "Montos" en plural en `/escrows/:id` | Hay un solo monto, el recibido. Con fee tokens, la transferencia de salida también puede cobrar fee, y eso queda fuera del control del contrato. |
+| 21 | "Montos" en plural en `/escrows/:id` | El recibido al crear (`amount`), lo retirado (`withdrawn`), lo que queda (`withdrawable`), y por cada retiro lo que salió del contrato y lo que llegó al titular. Con tokens con comisión, esos dos pueden diferir; `minReceived` acota lo segundo. |
 | 22 | Formato de paginación y de los números | `limit`/`offset`. Los `uint256` van como string. |
 | 23 | Qué significa "estado del servicio" en `/health` | DB y RPC accesibles, último bloque indexado, head de la cadena y lag. |
 | 24 | "Vencer" en el script de demo | Avanzar el tiempo, mostrar `ExpiredRecoverable` y después llamar a `recoverExpired`. |
@@ -517,11 +605,12 @@ Se validan con zod al arrancar. Una variable vacía toma el default y un valor i
 Cada una está analizada en la [revisión de seguridad](../security.md). Las de tokens afectan solo a los escrows de ese token: un escrow nunca paga en otro token ni más que su monto.
 
 - **Tokens con blacklist o pausa** (USDC, USDT). Comportamiento fijado por los tests `test_KnownLimitation_*` de `EscrowTokens.t.sol`.
-  - Si el sender está bloqueado, `cancel`, `reject` y `recoverExpired` revierten y los fondos quedan trabados hasta que el token lo desbloquee.
-  - Si el beneficiary está bloqueado, no puede confirmar, pero sí rechazar.
-  - Si el bloqueado es el propio contrato, o el token está pausado, se congelan todos los escrows de ese token.
-  - Con push no tiene solución. Un patrón pull (acreditar saldo y `withdraw(to)`) lo mitiga a cambio de complejidad: ver [mejoras](#qué-mejoraría-con-más-tiempo).
-- **Tokens que debitan al que paga más que el monto:** una fee cobrada aparte del monto, un rebasing negativo o una quema administrativa. Cada pago saca del contrato más de lo registrado, y los últimos escrows de ese token quedan cortos. Fijado por `test_KnownLimitation_FeeOnTopTokenUnderfundsLaterEscrows`. Revertir en el pago solo cambiaría la falta de fondos por un escrow trabado; la defensa es no aceptar esos tokens, con la whitelist de las mejoras.
+  - Las resoluciones no llaman al token, así que siempre se pueden hacer. Lo que se traba es el retiro.
+  - Si el titular está bloqueado, no puede retirar hasta que el token lo desbloquee. Un beneficiary bloqueado igual puede confirmar, y sus fondos esperan; si rechaza, el sender retira normalmente.
+  - Si el bloqueado es el propio contrato, o el token está pausado, no se puede crear ni retirar ningún escrow de ese token.
+  - `withdraw` paga siempre al titular. Un destino elegido por el titular (`withdraw(to)`) mitigaría su propia blacklist: ver [mejoras](#qué-mejoraría-con-más-tiempo).
+- **Tokens que cobran la comisión aparte, al que paga.** Ya no se llevan el respaldo de otros escrows: un retiro que sacaría del contrato más que el saldo del escrow revierte con `ExcessiveDebit`. El titular tiene que pedir menos, para que el monto más la comisión entren en el saldo, y recibe menos que lo depositado. Queda un resto de unas pocas unidades mínimas que no alcanza para otra transferencia más su comisión. Ver [Retiros](#retiros).
+- **Rebasing negativo o quema administrativa:** bajan el balance del contrato fuera de cualquier transferencia, así que ninguna medición lo detecta, y los últimos escrows de ese token quedan cortos.
 - **Tokens rebasing:** no soportados. El monto guardado se desfasa del balance real.
 - **Donaciones:** los tokens enviados directo al contrato no se pagan nunca y quedan trabados. Recuperarlos requeriría un owner.
 - **Carrera entre 0 y 2 h.** Sender y beneficiary pueden adelantarse mutuamente con front-running. El contrato garantiza que solo una resolución tiene efecto. No garantiza cuál.
@@ -532,8 +621,8 @@ Cada una está analizada en la [revisión de seguridad](../security.md). Las de 
 
 | Punto | Por qué |
 | --- | --- |
-| **Fuzz + invariantes** | Ataca directo el 30 % de seguridad. Un handler de Foundry ejecuta secuencias aleatorias de create, cancel, confirm, reject, recover y `warp`, con varios tokens incluidos uno fee-on-transfer. Invariantes: `balanceOf(token) >= Σ pendientes`, contabilidad exacta con donaciones, un estado final nunca cambia, lo pagado nunca supera lo depositado e ids consistentes con `escrowCount`. Además, cada llamada se compara con un modelo de referencia. |
-| **Fee-on-transfer** | Es necesario para que "cualquier ERC-20" sea seguro (ver decisión 7). |
+| **Fuzz + invariantes** | Ataca directo el 30 % de seguridad. Un handler de Foundry ejecuta secuencias aleatorias de create, cancel, confirm, reject, recover, withdraw y `warp`, con cuatro tokens, incluidos uno con la comisión descontada del monto y otro con la comisión cobrada aparte. Invariantes: `balanceOf(token) >= Σ (amount − withdrawn)`, contabilidad exacta con donaciones, un estado final nunca cambia, lo retirado nunca supera lo depositado e ids consistentes con `escrowCount`. Además, cada llamada se compara con un modelo de referencia. |
+| **Fee-on-transfer** | Es necesario para que "cualquier ERC-20" sea seguro (ver decisión 7). Cubre las dos formas de cobrar la comisión: descontada del monto y cobrada aparte, al que paga. |
 | **Slither + CI** | Slither corre en CI y sus hallazgos se comentan en [`docs/slither.md`](../slither.md), incluido lo que Slither no puede ver (reentrada a través del assembly de `SafeERC20`). GitHub Actions corre exactamente los mismos `docker compose run …` documentados en el [README](../../README.md#pruebas): fmt, tests, snapshots de gas, Slither, lint, typecheck, tests de la API y el ABI generado al día, más un smoke test con la demo. Si pasa en CI, pasa en cualquier máquina con Docker. |
 | **Deploy en Sepolia** | Muestra el vencimiento en vivo, donde no se puede adelantar el reloj, y el indexador contra una red real con confirmaciones. El contrato está verificado en Etherscan, y cualquiera puede indexarlo sin claves. Ver [Sepolia](#sepolia). En [Monad testnet](#monad-testnet), la misma demo tarda minutos en lugar de media hora. |
 | **Gas report + storage** | Gas por operación medido y verificado contra recibos de Anvil, `.gas-snapshot` para regresiones y 7 variantes de optimización medidas con su veredicto, en [`docs/gas.md`](../gas.md). El layout de 4 slots y los deadlines derivados están justificados en [Storage](#storage). |
@@ -545,10 +634,10 @@ Se descartaron:
 ## Qué mejoraría con más tiempo
 
 - **Owner limitado a la creación** (decisión 9): `Ownable2Step`, `pause()` que solo bloquee `createEscrow` y una whitelist de tokens que no afecte a los escrows ya creados. Acotaría las limitaciones de tokens no estándar. Exige eventos nuevos en el indexador y una matriz de permisos en los tests.
-- **Patrón pull** opcional para resolver el problema de los tokens con blacklist.
+- **`withdraw(to)`,** con un destino elegido por el titular, para que la blacklist del titular no trabe sus fondos.
 - **Rollback de reorgs por `blockHash`** para indexar sin esperar confirmaciones.
 - **`createWithPermit`** (EIP-2612) con `try/catch` sobre el `permit`.
 - **Webhooks o SSE** cuando un escrow cambia de estado, con outbox transaccional en Postgres.
 - **Tag `finalized` en el indexador,** como alternativa a N confirmaciones en redes reales.
-- **Paginación por cursor**, métricas Prometheus y rate limiting.
+- **Paginación por cursor**, métricas Prometheus y rate limiting, sobre todo para `max-withdrawal`, que puede hacer hasta 128 llamadas al nodo por request.
 - **Soporte multi-contrato o multi-chain** en el indexador.

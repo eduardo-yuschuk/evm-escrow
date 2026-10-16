@@ -10,6 +10,7 @@ Resumen de todo el log. El número entre paréntesis es la entrada.
 
 **Lo que decidió el autor, y no la IA:**
 - **El stack y el alcance:** Solidity 0.8.37 con `evm_version = "cancun"` (5), solo Docker como requisito del host (6), el gas report y la optimización de storage como opcional (3), y la demo en Sepolia, que la IA proponía dejar como mejora (29).
+- **Retiros pull** después de la entrega, para que un token con comisión aparte no se lleve el respaldo de otros escrows: el autor propuso `withdraw` con `transferAmount` y `minReceived`, y eligió pull puro, sin variantes combinadas ni destino `to` (38).
 - **Contra la recomendación de la IA:**
   - chequeos inline en cada acción, en lugar de helpers por parte, para leer el contrato de un vistazo (10)
   - ventanas `immutable` y no constantes, para poder hacer la demo en Sepolia (10)
@@ -31,9 +32,10 @@ Resumen de todo el log. El número entre paréntesis es la entrada.
 - Con Postgres pausado, una request colgaba más de 3 minutos (20).
 - Una prueba de la demo pasó sin error por una trampa de compose (23).
 - `forge coverage` dejaba modificado un archivo versionado (27, 28).
+- Un comentario decía que `withdrawn` no costaba nada al crear, y el struct escribía su cero: 2.245 de gas por creación. Lo mostró el snapshot de gas (38).
 
 **Cómo se verificó lo que generó la IA:**
-- **Mutaciones a mano:** 10 bugs en el contrato (11), 10 solo contra los invariantes (12), 19 en la API (21) y 3 contra la demo (23). Todos detectados.
+- **Mutaciones a mano:** 10 bugs en el contrato (11), 10 solo contra los invariantes (12), 19 en la API (21), 3 contra la demo (23), 12 en el contrato y 11 en la API con los retiros (38), y 7 en el endpoint de retiro máximo (39). Todos detectados, salvo los equivalentes; una mutación del endpoint mostró un hueco y se agregó un test (39).
 - **Contra una cadena real:** el gas, contra recibos de Anvil (13), y el indexador y la API, contra Anvil y Postgres antes de tener tests (18, 19).
 - **Pruebas descartables antes de afirmar algo,** por ejemplo:
   - lo que no ve Slither (13)
@@ -543,3 +545,84 @@ Tiempos medidos en la cadena: unos 29 minutos en total y 156 s por paso. DESIGN 
 - **Un clone limpio desde GitHub funciona:** levanta el stack y la demo pasa.
 - **El workflow `e2e` del último push falló** en "Start the stack" a los 16 s; normalmente tarda 97 s. No se pudo reproducir: con el mismo commit todo pasa, y las imágenes fijadas siguen disponibles. Los logs del job piden sesión en GitHub, así que el autor tiene que volver a correrlo. El badge de `e2e` del README va a mostrar el fallo hasta entonces.
 - **ROADMAP:** se cerraron el push y el ítem del PDF, que ya no existe.
+
+## 38. Retiros: ninguna resolución puede tomar fondos de otro escrow
+
+> durante la creación del escrow se registra el monto real y eso nos asegura ante un token que se cobra parte de los tokens transferidos, pero no se está manejando el caso de una confirmación, cancelación o vencimiento. no podemos dejar que cancel, confirm o reject tomen fondos ingresados por otro escrow. vamos a tener que implementar funciones como
+>
+> ```solidity
+> /// @notice Retira del escrow resuelto. Solo puede llamar el titular del saldo.
+> /// @param transferAmount Monto solicitado al token, sin incluir la comisión adicional.
+> /// @param minReceived Mínimo que debe recibir efectivamente el titular.
+> function withdraw(
+>     uint256 id,
+>     uint256 transferAmount,
+>     uint256 minReceived
+> ) external;
+>
+> /// @notice Confirma y retira en una sola transacción. Solo el beneficiario.
+> /// @dev Si falla el retiro, también se revierte la confirmación.
+> function confirmAndWithdraw(
+>     uint256 id,
+>     uint256 transferAmount,
+>     uint256 minReceived
+> ) external;
+> ```
+
+El origen es una revisión externa de los contratos, que queda fuera del repo. Sus hallazgos A-01 y A-02 están resumidos en la [revisión de seguridad](../security.md#revisión-posterior-fase-13).
+
+**Primera ronda de preguntas.** La IA preguntó qué variantes combinadas agregar y si `withdraw` debía aceptar un destino `to`. El autor no respondió las opciones y aclaró:
+
+> las variantes combinadas no tienen valor por si mismas para mi, lo único que me interesa es que si una operación no puede completarse por la totalidad del monto por exceder el monto depositado le demos a las partes la posibilidad de retirar el saldo debitable considerando el monto retenido por el token con lógica maliciosa (no tengo otra forma de definir a un impuesto al retiro del token)
+
+**Segunda ronda.** La IA planteó dos diseños que cumplen eso:
+- **Pull puro:** las resoluciones solo asignan el saldo, y `withdraw` es la única salida.
+- **Push con respaldo:** las resoluciones pagan todo como antes y, si el token debitaría de más, deshacen solo el pago con `try`/`catch` y dejan el saldo para `withdraw`.
+
+El autor eligió **pull puro**, la opción recomendada.
+
+**Output:** la fase 13 del [ROADMAP](ROADMAP.md), con el detalle de cada paso. El diseño está en [DESIGN](DESIGN.md#retiros).
+- **Contrato:**
+  - `withdraw(id, transferAmount, minReceived)`, con la firma del autor, solo para el titular y en una o más veces
+  - revierte con `ExcessiveDebit` si lo que bajó el balance del contrato supera el saldo del escrow, y con `ReceivedBelowMinimum` si el titular recibe menos que `minReceived`
+  - las cuatro resoluciones ya no transfieren
+  - un evento nuevo, `EscrowWithdrawn(id, debited, received)`, y `withdrawn` en la vista
+  - sin `confirmAndWithdraw` ni `to`, y la creación sin cambios
+- **Tests del contrato:** 99, con un archivo nuevo para `withdraw`. Los de comisión aparte reemplazan al test que fijaba la limitación. El handler de invariantes suma `withdraw` y un cuarto token, con la comisión cobrada aparte.
+- **API:** la migración `0002`, el proyector y la vista con `withdrawn`, `withdrawable`, `holder`, `canWithdraw` y la lista de retiros, cada uno con su hash. 94 tests, con uno que usa un token con comisión aparte para que lo debitado y lo recibido difieran.
+- **Demo:** cada resolución seguida del retiro de su titular. La salida nueva está en el [README](../../README.md#demo-de-punta-a-punta).
+- **Docs:** DESIGN, README, [seguridad](../security.md), [correctitud](../correctness.md), [gas](../gas.md) y [Slither](../slither.md). La fase 12 había aceptado el hallazgo como limitación con un argumento incompleto: revertir no perjudica a nadie más, y faltaba darle al titular una forma de cobrar por menos.
+- **Dos errores encontrados al verificar:**
+  - 14 tests nuevos fallaban porque el helper `_withdraw` consulta el escrow antes de llamar, y esa consulta consumía el `vm.expectRevert`. Ahora los casos de revert usan `_withdrawAs`, que llama directo.
+  - `withdrawn` estaba en el struct, y `createEscrow` escribía su cero: 2.245 de gas más por creación, contra lo que decía el comentario. Pasó a un mapping aparte, y `createEscrow` volvió a 141.000.
+- **Verificación:**
+  - el perfil `ci`, los chequeos de gas, coverage del 100 % y Slither con 0 hallazgos
+  - el stack, que reindexó al cambiar la cadena, y la demo
+  - la migración `0002` sobre una base con escrows ya proyectados
+  - el gas de cada operación contra recibos de Anvil
+  - 12 mutaciones en el contrato y 11 en la API, todas detectadas salvo una equivalente
+- **Pendiente, del autor:** deployar de nuevo en Sepolia y en Monad testnet. Los contratos de esas redes son la versión anterior, y el README lo advierte.
+
+## 39. Retiro máximo sin conocer la comisión del token
+
+> ¿cómo calculo el transferAmount si no conozco el impuesto del token?
+
+**Output:** una respuesta, sin cambios en el código. Se simula el retiro con `eth_call`, como el titular:
+- si `withdraw(id, saldo, 0)` revierte con `ExcessiveDebit`, el error trae lo que el token habría debitado
+- se ajusta `transferAmount × saldo / debitado` y se vuelve a simular
+- simulando con `minReceived = transferAmount`, `ReceivedBelowMinimum` trae lo que se recibiría
+
+La IA ofreció hacerlo en la API, y el autor aceptó:
+
+> sí, agregá el endpoint con su test
+
+**Output:** `GET /escrows/:id/max-withdrawal`. El detalle está en la fase 13 del [ROADMAP](ROADMAP.md) y el diseño en [DESIGN](DESIGN.md#get-escrowsidmax-withdrawal).
+- **Qué devuelve:** el `transferAmount` más alto cuyo retiro, simulado contra el último bloque, pasa, y lo que recibiría el titular. Lee el escrow de la cadena, en el mismo bloque, y no de la proyección.
+- **La búsqueda** es una función pura, `findMaxTransfer`:
+  - salta al monto proporcional con lo debitado que informa `ExcessiveDebit`, o que se deduce del `ERC20InsufficientBalance` del token
+  - desde ahí sube duplicando el paso
+  - sin ese dato, prueba el monto mínimo y bisecta, con un tope de 128 simulaciones
+- **Respuestas:** `0` mientras `Pending` o sin saldo que pague la comisión, y `409` si ningún monto pasa por otro motivo, como un titular bloqueado.
+- **Tests:** 48 más, 142 en la API. Los unitarios comparan la búsqueda con un oráculo independiente, sobre seis modelos de token. Los de integración usan `FeeOnTopERC20` y `BlacklistERC20`: el máximo de un escrow de 1.000 con el 1 % aparte es 991, 992 revierte y 991 se puede retirar.
+- **Mutaciones:** 7. Una, deducir mal lo debitado del error del token, al principio no se detectó: el resultado no cambia, porque cada candidato se simula, y solo cuesta 18 simulaciones en lugar de 5. Se agregó una cota de simulaciones al test, que ahora la detecta.
+- **En el stack:** después de la demo, el endpoint responde `0` para un escrow ya retirado y `404` para uno inexistente. La respuesta está en el [README](../../README.md#ejemplos-http).

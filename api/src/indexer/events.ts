@@ -32,7 +32,12 @@ export interface ResolutionEvent {
   args: { id: bigint };
 }
 
-export type EscrowEvent = EscrowCreatedEvent | ResolutionEvent;
+export interface EscrowWithdrawnEvent {
+  name: "EscrowWithdrawn";
+  args: { id: bigint; debited: bigint; received: bigint };
+}
+
+export type EscrowEvent = EscrowCreatedEvent | ResolutionEvent | EscrowWithdrawnEvent;
 
 /** A decoded Escrow event and where it happened. Addresses and hashes are lowercase. */
 export interface IndexedEvent {
@@ -78,6 +83,10 @@ function decode(log: Log): EscrowEvent {
     case "EscrowRejected":
     case "EscrowExpired":
       return { name: decoded.eventName, args: { id: decoded.args.id } };
+    case "EscrowWithdrawn": {
+      const { id, debited, received } = decoded.args;
+      return { name: "EscrowWithdrawn", args: { id, debited, received } };
+    }
   }
 }
 

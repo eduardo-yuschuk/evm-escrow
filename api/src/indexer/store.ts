@@ -69,7 +69,7 @@ export async function writeIndexerState(db: PoolClient, state: IndexerState): Pr
 }
 
 export async function clearProjection(db: PoolClient): Promise<void> {
-  await db.query("TRUNCATE events, escrows");
+  await db.query("TRUNCATE events, withdrawals, escrows");
 }
 
 export async function readCheckpoint(pool: Pool): Promise<bigint> {
@@ -114,11 +114,21 @@ async function insertEvents(db: PoolClient, events: IndexedEvent[]): Promise<Set
 async function loadEscrowState(db: PoolClient, id: bigint): Promise<EscrowState | undefined> {
   const { rows } = await db.query<{
     status: EscrowStatus;
+    amount: string;
+    withdrawn: string;
     created_tx: Hash;
     resolved_tx: Hash | null;
-  }>("SELECT status, created_tx, resolved_tx FROM escrows WHERE id = $1", [id]);
+  }>("SELECT status, amount, withdrawn, created_tx, resolved_tx FROM escrows WHERE id = $1", [id]);
   const row = rows[0];
-  return row && { status: row.status, createdTx: row.created_tx, resolvedTx: row.resolved_tx };
+  return (
+    row && {
+      status: row.status,
+      amount: BigInt(row.amount),
+      withdrawn: BigInt(row.withdrawn),
+      createdTx: row.created_tx,
+      resolvedTx: row.resolved_tx,
+    }
+  );
 }
 
 async function writeMutation(
@@ -156,6 +166,32 @@ async function writeMutation(
         [mutation.id, mutation.status, mutation.resolvedTx, mutation.resolvedAt],
       );
       return;
+    case "withdraw": {
+      const withdrawal = mutation.withdrawal;
+      // Counted only if the row is new: the constraints on escrows reject a Pending escrow or a
+      // withdrawn above the amount.
+      await db.query(
+        `WITH inserted AS (
+           INSERT INTO withdrawals (tx_hash, log_index, escrow_id, debited, received, block_number,
+                                    withdrawn_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (tx_hash, log_index) DO NOTHING
+           RETURNING escrow_id, debited
+         )
+         UPDATE escrows SET withdrawn = escrows.withdrawn + inserted.debited
+         FROM inserted WHERE escrows.id = inserted.escrow_id`,
+        [
+          withdrawal.txHash,
+          withdrawal.logIndex,
+          withdrawal.id,
+          withdrawal.debited,
+          withdrawal.received,
+          withdrawal.blockNumber,
+          withdrawal.withdrawnAt,
+        ],
+      );
+      return;
+    }
     case "skip":
       log[mutation.level](
         {

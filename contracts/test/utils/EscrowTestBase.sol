@@ -89,9 +89,41 @@ abstract contract EscrowTestBase is Test {
         else escrow.recoverExpired(id);
     }
 
-    /// @dev Creates an escrow and drives it to the given final status.
+    /// @dev The holder of a resolved escrow withdraws its whole balance, with no minimum. Reads the escrow
+    ///      first, so it cannot follow `vm.expectRevert`, which would apply to that read: use `_withdrawAs`.
+    function _withdraw(uint256 id) internal {
+        _withdraw(id, _balance(id), 0);
+    }
+
+    function _withdraw(uint256 id, uint256 transferAmount, uint256 minReceived) internal {
+        _withdrawAs(_holder(id), id, transferAmount, minReceived);
+    }
+
+    function _withdrawAs(address caller, uint256 id, uint256 transferAmount, uint256 minReceived) internal {
+        vm.prank(caller);
+        escrow.withdraw(id, transferAmount, minReceived);
+    }
+
+    /// @dev Who can withdraw from a resolved escrow: the beneficiary if `Released`, the sender otherwise.
+    function _holder(uint256 id) internal view returns (address) {
+        IEscrow.EscrowView memory e = escrow.getEscrow(id);
+        return e.status == IEscrow.Status.Released ? e.beneficiary : e.sender;
+    }
+
+    /// @dev What withdrawals can still take out of the contract for `id`.
+    function _balance(uint256 id) internal view returns (uint256) {
+        IEscrow.EscrowView memory e = escrow.getEscrow(id);
+        return e.amount - e.withdrawn;
+    }
+
+    /// @dev Creates an escrow and drives it to the given final status, without withdrawing.
     function _createResolved(IEscrow.Status status) internal returns (uint256 id) {
         id = _create();
+        _resolve(id, status);
+    }
+
+    /// @dev Drives a pending escrow to the given final status, moving time forward if it needs to expire.
+    function _resolve(uint256 id, IEscrow.Status status) internal {
         if (status == IEscrow.Status.CancelledBySender) {
             _act(Action.Cancel, id);
         } else if (status == IEscrow.Status.Released) {

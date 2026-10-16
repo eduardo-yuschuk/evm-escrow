@@ -9,9 +9,10 @@ import {IEscrow} from "./IEscrow.sol";
 
 /// @title Escrow
 /// @notice Holds ERC-20 tokens from a sender until the beneficiary confirms or rejects, the sender
-///         cancels within the cancel window, or the sender recovers them after expiration.
-/// @dev No owner, no pause, no upgradeability: the only way funds leave the contract is through the
-///      four resolution actions, each restricted to one party and one time window.
+///         cancels within the cancel window, or the sender recovers them after expiration. The party
+///         the resolution assigns the funds to then withdraws them.
+/// @dev No owner, no pause, no upgradeability: the only way funds leave the contract is `withdraw`, by
+///      the holder of a resolved escrow and never for more than that escrow's balance.
 contract Escrow is IEscrow, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
@@ -36,6 +37,10 @@ contract Escrow is IEscrow, ReentrancyGuardTransient {
     uint256 public escrowCount;
 
     mapping(uint256 id => EscrowData) private _escrows;
+
+    /// @dev What withdrawals took out of the contract for each escrow. Outside `EscrowData`, so that
+    ///      `createEscrow` does not write it: it stays zero, at no cost, until the first withdrawal.
+    mapping(uint256 id => uint256) private _withdrawn;
 
     /// @param cancelWindow Seconds after creation during which the sender can cancel (2 hours in production).
     /// @param ttl Seconds after creation after which the escrow expires (7 days in production).
@@ -96,7 +101,6 @@ contract Escrow is IEscrow, ReentrancyGuardTransient {
 
         escrow.status = Status.CancelledBySender;
         emit EscrowCancelled(id);
-        IERC20(escrow.token).safeTransfer(escrow.sender, escrow.amount);
     }
 
     /// @inheritdoc IEscrow
@@ -108,7 +112,6 @@ contract Escrow is IEscrow, ReentrancyGuardTransient {
 
         escrow.status = Status.Released;
         emit EscrowReleased(id);
-        IERC20(escrow.token).safeTransfer(escrow.beneficiary, escrow.amount);
     }
 
     /// @inheritdoc IEscrow
@@ -120,7 +123,6 @@ contract Escrow is IEscrow, ReentrancyGuardTransient {
 
         escrow.status = Status.Rejected;
         emit EscrowRejected(id);
-        IERC20(escrow.token).safeTransfer(escrow.sender, escrow.amount);
     }
 
     /// @inheritdoc IEscrow
@@ -132,7 +134,39 @@ contract Escrow is IEscrow, ReentrancyGuardTransient {
 
         escrow.status = Status.Expired;
         emit EscrowExpired(id);
-        IERC20(escrow.token).safeTransfer(escrow.sender, escrow.amount);
+    }
+
+    /// @inheritdoc IEscrow
+    function withdraw(uint256 id, uint256 transferAmount, uint256 minReceived) external nonReentrant {
+        EscrowData storage escrow = _escrows[id];
+        Status status = escrow.status;
+        if (status == Status.None) revert EscrowNotFound(id);
+        if (status == Status.Pending) revert NotResolved(id);
+        // Only `Released` pays the beneficiary; the other three final statuses return the funds.
+        address holder = status == Status.Released ? escrow.beneficiary : escrow.sender;
+        if (msg.sender != holder) revert NotHolder(id, msg.sender);
+        if (transferAmount == 0) revert ZeroAmount();
+        uint256 withdrawn = _withdrawn[id];
+        uint256 balance = escrow.amount - withdrawn;
+        if (transferAmount > balance) revert AmountExceedsBalance(id, balance, transferAmount);
+
+        // Like `createEscrow`, the escrow is written after the transfer, because what is charged to it is
+        // what the contract's balance actually dropped, not `transferAmount`. Reentrancy is prevented by
+        // `nonReentrant`. Both subtractions revert if a balance moves the wrong way, which no token that
+        // reports balances honestly does.
+        IERC20 erc20 = IERC20(escrow.token);
+        uint256 contractBefore = erc20.balanceOf(address(this));
+        uint256 holderBefore = erc20.balanceOf(holder);
+        erc20.safeTransfer(holder, transferAmount);
+        uint256 debited = contractBefore - erc20.balanceOf(address(this));
+        uint256 received = erc20.balanceOf(holder) - holderBefore;
+        // The fee is checked against this escrow's balance, never against what the contract holds:
+        // tokens that back other escrows, or that were donated, cannot pay it.
+        if (debited > balance) revert ExcessiveDebit(id, balance, debited);
+        if (received < minReceived) revert ReceivedBelowMinimum(id, received, minReceived);
+
+        _withdrawn[id] = withdrawn + debited;
+        emit EscrowWithdrawn(id, debited, received);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -149,6 +183,7 @@ contract Escrow is IEscrow, ReentrancyGuardTransient {
             beneficiary: escrow.beneficiary,
             token: escrow.token,
             amount: escrow.amount,
+            withdrawn: _withdrawn[id],
             createdAt: escrow.createdAt,
             cancelDeadline: escrow.createdAt + CANCEL_WINDOW,
             expiresAt: escrow.createdAt + TTL,

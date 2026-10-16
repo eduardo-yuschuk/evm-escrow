@@ -85,7 +85,7 @@ export function buildServer({ pool, client, clock, log, health }: ServerDeps): F
     });
   });
 
-  escrowRoutes(app, { pool, clock });
+  escrowRoutes(app, { pool, client, clock });
   healthRoutes(app, { pool, client, options: health });
   return app;
 }

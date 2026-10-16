@@ -14,6 +14,10 @@ const outputFile = path.resolve(import.meta.dirname, "../src/generated/contracts
 const contracts = [
   { name: "escrow", artifact: "Escrow.sol/Escrow.json" },
   { name: "mockErc20", artifact: "MockERC20.sol/MockERC20.json" },
+  // Only for the tests: withdrawals where what the escrow pays and what the holder gets differ, and
+  // a token that can block the holder.
+  { name: "feeOnTopErc20", artifact: "FeeOnTopERC20.sol/FeeOnTopERC20.json" },
+  { name: "blacklistErc20", artifact: "BlacklistERC20.sol/BlacklistERC20.json" },
 ] as const;
 
 const artifactSchema = z.object({

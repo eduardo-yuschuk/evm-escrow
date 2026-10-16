@@ -6,7 +6,7 @@ Análisis estático de `contracts/src/` con Slither 0.11.6.
 docker compose run --rm slither
 ```
 
-**Resultado actual:** `. analyzed (9 contracts with 100 detectors), 0 result(s) found`, con exit code 0. Un hallazgo nuevo hace fallar el comando, así que CI puede usarlo tal cual.
+**Resultado actual:** `. analyzed (9 contracts with 100 detectors), 0 result(s) found`, con exit code 0, también con los retiros de la fase 13. Un hallazgo nuevo hace fallar el comando, así que CI puede usarlo tal cual.
 
 ## Configuración
 
@@ -58,7 +58,7 @@ Primera corrida, sin exclusiones de detectores: 9 resultados de 3 detectores.
 
 ## Lo que Slither no ve: reentrada a través de `SafeERC20`
 
-Prueba de cordura de la configuración: se inyectó una reentrada real en `confirm`, sin `nonReentrant` y con la transferencia antes del cambio de estado.
+Prueba de cordura de la configuración, en la fase 4, cuando `confirm` todavía transfería: se inyectó una reentrada real en `confirm`, sin `nonReentrant` y con la transferencia antes del cambio de estado.
 
 | Mutación | Resultado de Slither |
 | --- | --- |
@@ -66,10 +66,10 @@ Prueba de cordura de la configuración: se inyectó una reentrada real en `confi
 | Transferencia con `IERC20.transfer` directo | `reentrancy-events` en `confirm` |
 
 - **Causa:** OZ 5.7 implementa `safeTransfer` y `safeTransferFrom` con un `call` en assembly. Slither no modela llamadas externas dentro de assembly, así que sus detectores de reentrada no las ven.
-- **Consecuencia:** en este contrato, los detectores de reentrada de Slither **no cubren los movimientos de fondos**.
+- **Consecuencia:** en este contrato, los detectores de reentrada de Slither **no cubren los movimientos de fondos**. Tampoco señalan que `withdraw`, como `createEscrow`, escriba después de transferir: no ven la transferencia.
 - **Qué lo cubre:**
-  - `nonReentrant` en las 5 funciones que mueven fondos, más el orden CEI al resolver
-  - los tests de reentrada de `EscrowTokens.t.sol`: el ataque de doble conteo en `createEscrow` y la reentrada durante el pago en las 4 resoluciones
-  - las mutaciones de las fases 2 y 3: sacar el guard de `createEscrow` hace fallar los tests
+  - `nonReentrant` en las 6 funciones que cambian estado, con un solo guard
+  - los tests de reentrada de `EscrowTokens.t.sol`: el ataque de doble conteo en `createEscrow` y la reentrada durante el retiro, en los cuatro estados finales
+  - las mutaciones: sacar el guard de `createEscrow` (fase 2), de `withdraw` o de `reject` (fase 13) hace fallar los tests
 
 Un "0 hallazgos" de Slither no es evidencia de que no haya reentrada; la evidencia son los tests.

@@ -1,6 +1,6 @@
 // End-to-end demo against the docker compose stack: one escrow for each way to resolve it, sent with
-// viem from a sender and a beneficiary account. After each step it waits until the API reflects it,
-// checks what the API reports and prints it. An unexpected state, or a step the API does not reflect
+// viem from a sender and a beneficiary account, each one followed by its holder's withdrawal. After
+// each step it waits until the API reflects it, checks what the API reports and prints it. An unexpected state, or a step the API does not reflect
 // in time, ends the demo with exit code 1, so CI runs it as a smoke test.
 //
 // On Anvil it sends from Anvil's accounts 0 and 1, mines the blocks the API waits for and moves the
@@ -74,17 +74,23 @@ const ANVIL_MNEMONIC = "test test test test test test test test test test test j
 /** Escrow.Status.Pending, as getEscrow returns it. */
 const ONCHAIN_PENDING = 1;
 
-/** Who sends each resolution, the status it leads to, and who gets the funds. */
+/** Who sends each resolution, the status it leads to, and who can withdraw the funds after it. */
 const RESOLUTIONS = {
-  confirm: { by: "beneficiary", status: "Released", to: "beneficiary" },
-  reject: { by: "beneficiary", status: "Rejected", to: "sender" },
-  cancel: { by: "sender", status: "CancelledBySender", to: "sender" },
-  recoverExpired: { by: "sender", status: "Expired", to: "sender" },
+  confirm: { by: "beneficiary", status: "Released", holder: "beneficiary" },
+  reject: { by: "beneficiary", status: "Rejected", holder: "sender" },
+  cancel: { by: "sender", status: "CancelledBySender", holder: "sender" },
+  recoverExpired: { by: "sender", status: "Expired", holder: "sender" },
 } as const;
 
 type Resolution = keyof typeof RESOLUTIONS;
 
-const noActions = { canCancel: false, canConfirm: false, canReject: false, canRecover: false };
+const noActions = {
+  canCancel: false,
+  canConfirm: false,
+  canReject: false,
+  canRecover: false,
+  canWithdraw: false,
+};
 
 function createClient(rpcUrl: string, chainId: number, pollingInterval: number) {
   return createTestClient({
@@ -276,6 +282,7 @@ function actionsOf(view: EscrowView): string {
     view.canConfirm && "confirm",
     view.canReject && "reject",
     view.canRecover && "recover",
+    view.canWithdraw && "withdraw",
   ].filter((action) => action !== false);
   return actions.length > 0 ? `can ${actions.join(", ")}` : "no actions";
 }
@@ -318,14 +325,17 @@ async function create(demo: Demo, label: string, amount: bigint): Promise<bigint
   check("create", view, {
     status: "Pending",
     onchainStatus: "Pending",
+    ...noActions,
     canCancel: true,
     canConfirm: true,
     canReject: true,
-    canRecover: false,
     sender: sender.account.address,
     beneficiary: beneficiary.account.address,
     token: getAddress(deployment.token),
     amount: amount.toString(),
+    withdrawn: "0",
+    withdrawable: "0",
+    holder: null,
     createdTx: receipt.transactionHash,
     resolvedTx: null,
   });
@@ -333,6 +343,7 @@ async function create(demo: Demo, label: string, amount: bigint): Promise<bigint
   return id;
 }
 
+/** Resolves the escrow, which assigns the funds to its holder without moving any token. */
 async function resolve(
   demo: Demo,
   id: bigint,
@@ -340,9 +351,9 @@ async function resolve(
   resolution: Resolution,
 ): Promise<void> {
   const { client, deployment, format } = demo;
-  const { by, status, to } = RESOLUTIONS[resolution];
-  const recipient = demo[to].account.address;
-  const before = await balanceOf(demo, recipient);
+  const { by, status, holder } = RESOLUTIONS[resolution];
+  const holderAddress = demo[holder].account.address;
+  const before = await balanceOf(demo, holderAddress);
   const receipt = await mined(
     demo,
     await client.writeContract({
@@ -359,14 +370,70 @@ async function resolve(
     status,
     onchainStatus: status,
     ...noActions,
+    canWithdraw: true,
+    holder: holderAddress,
+    withdrawn: "0",
+    withdrawable: amount.toString(),
     resolvedTx: receipt.transactionHash,
   });
-  const received = (await balanceOf(demo, recipient)) - before;
-  if (received !== amount) {
-    throw new Error(`${resolution} of escrow #${view.id}: the ${to} got ${format(received)}`);
+  if ((await balanceOf(demo, holderAddress)) !== before) {
+    throw new Error(`${resolution} of escrow #${view.id} moved tokens of the ${holder}`);
   }
-  const destination = to === "beneficiary" ? "to the beneficiary" : "back to the sender";
-  print("", resolution, view, `${format(amount)} ${destination}`);
+  print("", resolution, view, `${format(amount)} for the ${holder} to withdraw`);
+}
+
+/** The holder withdraws the whole amount, and requires receiving all of it. */
+async function withdraw(
+  demo: Demo,
+  id: bigint,
+  amount: bigint,
+  resolution: Resolution,
+): Promise<void> {
+  const { client, deployment, format } = demo;
+  const { status, holder } = RESOLUTIONS[resolution];
+  const holderAddress = demo[holder].account.address;
+  const before = await balanceOf(demo, holderAddress);
+  const receipt = await mined(
+    demo,
+    await client.writeContract({
+      account: demo[holder].account,
+      address: deployment.escrow,
+      abi: escrowAbi,
+      functionName: "withdraw",
+      args: [id, amount, amount],
+    }),
+  );
+
+  const view = await waitForApi(
+    demo,
+    id,
+    "the withdrawal",
+    (escrow) => escrow.withdrawals.length > 0,
+  );
+  check("withdraw", view, {
+    status,
+    onchainStatus: status,
+    ...noActions,
+    withdrawn: amount.toString(),
+    withdrawable: "0",
+  });
+  const [withdrawal] = view.withdrawals;
+  if (
+    view.withdrawals.length !== 1 ||
+    withdrawal?.txHash !== receipt.transactionHash ||
+    withdrawal.debited !== amount.toString() ||
+    withdrawal.received !== amount.toString()
+  ) {
+    throw new Error(
+      `withdraw of escrow #${view.id}: withdrawals are ${JSON.stringify(view.withdrawals)}`,
+    );
+  }
+  const received = (await balanceOf(demo, holderAddress)) - before;
+  if (received !== amount) {
+    throw new Error(`withdraw of escrow #${view.id}: the ${holder} got ${format(received)}`);
+  }
+  const destination = holder === "beneficiary" ? "to the beneficiary" : "back to the sender";
+  print("", "withdraw", view, `${format(amount)} ${destination}`);
 }
 
 /** Waits for a block with a timestamp of at least `target` and returns that timestamp. */
@@ -413,6 +480,7 @@ async function expire(demo: Demo, id: bigint): Promise<void> {
     onchainStatus: "Pending",
     ...noActions,
     canRecover: true,
+    holder: null,
     resolvedTx: null,
   });
   const onchain = await client.readContract(getEscrow);
@@ -484,13 +552,17 @@ async function main(): Promise<void> {
   // the chain's time forward affects every escrow at once.
   const a = await create(demo, "A", amounts.A);
   await resolve(demo, a, amounts.A, "confirm");
+  await withdraw(demo, a, amounts.A, "confirm");
   const b = await create(demo, "B", amounts.B);
   await resolve(demo, b, amounts.B, "reject");
+  await withdraw(demo, b, amounts.B, "reject");
   const c = await create(demo, "C", amounts.C);
   await resolve(demo, c, amounts.C, "cancel");
+  await withdraw(demo, c, amounts.C, "cancel");
   const d = await create(demo, "D", amounts.D);
   await expire(demo, d);
   await resolve(demo, d, amounts.D, "recoverExpired");
+  await withdraw(demo, d, amounts.D, "recoverExpired");
 
   console.log();
   console.log("Every state matched. The full views, from the host:");

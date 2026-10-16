@@ -20,35 +20,38 @@ contract EscrowInvariantsTest is Test {
         escrow = new Escrow(2 hours, 7 days);
         handler = new EscrowHandler(escrow);
 
-        bytes4[] memory selectors = new bytes4[](8);
+        bytes4[] memory selectors = new bytes4[](9);
         selectors[0] = EscrowHandler.createEscrow.selector;
         selectors[1] = EscrowHandler.cancel.selector;
         selectors[2] = EscrowHandler.confirm.selector;
         selectors[3] = EscrowHandler.reject.selector;
         selectors[4] = EscrowHandler.recoverExpired.selector;
-        selectors[5] = EscrowHandler.donate.selector;
-        selectors[6] = EscrowHandler.warp.selector;
-        selectors[7] = EscrowHandler.warpToDeadline.selector;
+        selectors[5] = EscrowHandler.withdraw.selector;
+        selectors[6] = EscrowHandler.donate.selector;
+        selectors[7] = EscrowHandler.warp.selector;
+        selectors[8] = EscrowHandler.warpToDeadline.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }
 
-    /// @dev Solvency: per token, the escrow holds at least what it owes to its pending escrows.
-    function invariant_HoldsEnoughForPendingEscrows() public view {
+    /// @dev Solvency: per token, the escrow holds at least what it owes, that is, the balance of every
+    ///      escrow, pending or resolved and not fully withdrawn. Includes the token that charges its fee
+    ///      on top of the amount, which a withdrawal could otherwise take from other escrows.
+    function invariant_HoldsEnoughForEveryEscrowBalance() public view {
         for (uint256 t; t < handler.tokenCount(); ++t) {
             address token = handler.tokens(t);
-            assertGe(ITestToken(token).balanceOf(address(escrow)), _pendingAmount(token), "insolvent");
+            assertGe(ITestToken(token).balanceOf(address(escrow)), _owed(token), "insolvent");
         }
     }
 
-    /// @dev Exact accounting: per token, the balance is what was received, minus what was paid out,
-    ///      plus donations. Nothing leaks in or out through any other path.
+    /// @dev Exact accounting: per token, the balance is what was received, minus what withdrawals took
+    ///      out, plus donations. Nothing leaks in or out through any other path.
     function invariant_BalanceMatchesAccounting() public view {
         for (uint256 t; t < handler.tokenCount(); ++t) {
             address token = handler.tokens(t);
             uint256 expected = handler.deposited(token) - handler.paidOut(token) + handler.donated(token);
             assertEq(ITestToken(token).balanceOf(address(escrow)), expected, "balance");
-            assertEq(_pendingAmount(token) + handler.donated(token), expected, "pending");
+            assertEq(_owed(token) + handler.donated(token), expected, "owed");
         }
     }
 
@@ -60,9 +63,9 @@ contract EscrowInvariantsTest is Test {
         }
     }
 
-    /// @dev Every escrow matches the model: its data never changes after creation, and its status only
-    ///      changed through a call the model expected to succeed. In particular, a final status never
-    ///      changes, because the model never moves an escrow out of a final status.
+    /// @dev Every escrow matches the model: its data never changes after creation, and its status and
+    ///      `withdrawn` only changed through calls the model expected to succeed. In particular, a final
+    ///      status never changes, nothing is withdrawn while pending, and never more than the amount.
     function invariant_EveryEscrowMatchesModel() public view {
         for (uint256 id = 1; id <= handler.created(); ++id) {
             IEscrow.EscrowView memory e = escrow.getEscrow(id);
@@ -72,6 +75,9 @@ contract EscrowInvariantsTest is Test {
             assertEq(e.beneficiary, m.beneficiary, "beneficiary");
             assertEq(e.token, m.token, "token");
             assertEq(e.amount, m.amount, "amount");
+            assertEq(e.withdrawn, m.withdrawn, "withdrawn");
+            assertLe(e.withdrawn, e.amount, "withdrawn above amount");
+            if (e.status == IEscrow.Status.Pending) assertEq(e.withdrawn, 0, "withdrawn while pending");
             assertEq(e.createdAt, m.createdAt, "createdAt");
             assertEq(e.cancelDeadline, m.createdAt + escrow.CANCEL_WINDOW(), "cancelDeadline");
             assertEq(e.expiresAt, m.createdAt + escrow.TTL(), "expiresAt");
@@ -89,7 +95,7 @@ contract EscrowInvariantsTest is Test {
 
     /// @dev Prints how many calls of each kind succeeded or reverted as expected (visible with `-vv`).
     function afterInvariant() external view {
-        string[4] memory names = ["cancel", "confirm", "reject", "recoverExpired"];
+        string[5] memory names = ["cancel", "confirm", "reject", "recoverExpired", "withdraw"];
         console.log("escrows created:", handler.created());
         for (uint256 a; a < names.length; ++a) {
             console.log(names[a], handler.successes(a), handler.expectedReverts(a));
@@ -100,11 +106,11 @@ contract EscrowInvariantsTest is Test {
     // Helpers
     // ---------------------------------------------------------------------------------------------
 
-    /// @dev Sum of the amounts of the pending escrows of `token`, read from the contract.
-    function _pendingAmount(address token) internal view returns (uint256 sum) {
+    /// @dev Sum of the balances (`amount - withdrawn`) of every escrow of `token`, read from the contract.
+    function _owed(address token) internal view returns (uint256 sum) {
         for (uint256 id = 1; id <= escrow.escrowCount(); ++id) {
             IEscrow.EscrowView memory e = escrow.getEscrow(id);
-            if (e.token == token && e.status == IEscrow.Status.Pending) sum += e.amount;
+            if (e.token == token) sum += e.amount - e.withdrawn;
         }
     }
 

@@ -30,6 +30,8 @@ contract EscrowTokensTest is EscrowTestBase {
 
         _act(Action.Confirm, released);
         _act(Action.Cancel, cancelled);
+        _withdraw(released);
+        _withdraw(cancelled);
 
         assertEq(usdt.balanceOf(beneficiary), AMOUNT);
         assertEq(usdt.balanceOf(sender), INITIAL_BALANCE - AMOUNT);
@@ -45,7 +47,7 @@ contract EscrowTokensTest is EscrowTestBase {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Fee-on-transfer tokens: the escrow records and pays out what it actually received
+    // Fee-on-transfer tokens: the escrow records what it actually received and pays out at most that
     // ---------------------------------------------------------------------------------------------
 
     function test_FeeToken_RecordsAmountReceived() public {
@@ -74,14 +76,37 @@ contract EscrowTokensTest is EscrowTestBase {
         vm.prank(otherSender);
         uint256 second = escrow.createEscrow(address(feeToken), beneficiary, AMOUNT);
 
-        // Each payout sends exactly what was recorded; the escrow ends empty, never short.
+        // Each withdrawal takes exactly what was recorded; the escrow ends empty, never short.
         _act(Action.Confirm, first);
+        _withdraw(first);
         assertEq(feeToken.balanceOf(address(escrow)), escrow.getEscrow(second).amount);
         _act(Action.Confirm, second);
+        _withdraw(second);
         assertEq(feeToken.balanceOf(address(escrow)), 0);
 
         // The outgoing transfer is charged too: the beneficiary gets 99% of each recorded 99%.
         assertEq(feeToken.balanceOf(beneficiary), 2 * (AMOUNT * 99 / 100) * 99 / 100);
+    }
+
+    /// @dev The fee on the way out is the token's, and can change after the escrow is created: the
+    ///      holder sets the least they accept.
+    function test_FeeToken_MinReceivedProtectsTheHolder() public {
+        FeeOnTransferERC20 feeToken = new FeeOnTransferERC20(100); // 1%
+        _fund(address(feeToken), sender);
+        uint256 id = _create(address(feeToken), AMOUNT);
+        _act(Action.Confirm, id);
+        uint256 balance = _balance(id);
+        uint256 net = balance * 99 / 100;
+
+        vm.expectRevert(abi.encodeWithSelector(IEscrow.ReceivedBelowMinimum.selector, id, net, balance));
+        _withdrawAs(beneficiary, id, balance, balance);
+        assertEq(feeToken.balanceOf(beneficiary), 0);
+
+        vm.expectEmit(address(escrow));
+        emit IEscrow.EscrowWithdrawn(id, balance, net);
+        _withdraw(id, balance, net);
+        assertEq(feeToken.balanceOf(beneficiary), net);
+        assertEq(feeToken.balanceOf(address(escrow)), 0);
     }
 
     function test_RevertWhen_FeeTokenDeliversNothing() public {
@@ -113,74 +138,85 @@ contract EscrowTokensTest is EscrowTestBase {
         assertEq(hookToken.balanceOf(address(attacker)), 2 * AMOUNT);
     }
 
-    function test_RevertWhen_TokenReentersDuringPayout() public {
+    /// @dev During the transfer of a withdrawal the token tries to withdraw again from the same escrow,
+    ///      or to resolve another one. The guard stops both: no code of the escrow runs while a token
+    ///      call is in progress.
+    function test_RevertWhen_TokenReentersDuringWithdraw() public {
         ReentrantERC20 hookToken = new ReentrantERC20();
         _fund(address(hookToken), sender);
-        Action[4] memory actions = _actions();
+        uint256 pending = _create(address(hookToken), AMOUNT);
+        IEscrow.Status[4] memory statuses = _finalStatuses();
 
-        for (uint256 a; a < actions.length; ++a) {
+        for (uint256 s; s < statuses.length; ++s) {
             uint256 id = _create(address(hookToken), AMOUNT);
-            if (actions[a] == Action.RecoverExpired) vm.warp(_expiresAt(id));
+            _resolve(id, statuses[s]);
+            address holder = _holder(id);
 
-            // During the payout, try to resolve the same escrow again. The guard stops it first; even
-            // without the guard it would fail with `NotPending`, since the status is already final (CEI).
-            hookToken.setReentry(address(escrow), abi.encodeCall(escrow.reject, (id)));
+            bytes[2] memory payloads =
+                [abi.encodeCall(escrow.withdraw, (id, AMOUNT, 0)), abi.encodeCall(escrow.reject, (pending))];
+            for (uint256 p; p < payloads.length; ++p) {
+                hookToken.setReentry(address(escrow), payloads[p]);
 
-            vm.expectRevert(ReentrancyGuardTransient.ReentrancyGuardReentrantCall.selector);
-            _act(actions[a], id);
+                vm.expectRevert(ReentrancyGuardTransient.ReentrancyGuardReentrantCall.selector);
+                _withdrawAs(holder, id, AMOUNT, 0);
 
-            _assertStatus(id, IEscrow.Status.Pending);
+                assertEq(escrow.getEscrow(id).withdrawn, 0);
+                _assertStatus(pending, IEscrow.Status.Pending);
+            }
             hookToken.setReentry(address(0), "");
         }
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Known limitation: tokens with a blacklist (USDC style) and push payments
+    // Known limitation: tokens with a blacklist (USDC style)
     // ---------------------------------------------------------------------------------------------
 
-    /// @dev Documents the accepted limitation: while the sender is blacklisted, every path that
-    ///      returns funds to them reverts, and after expiration the beneficiary cannot confirm.
-    ///      Funds stay locked until the token unblocks the sender. See docs/ai/DESIGN.md, "Limitaciones conocidas".
+    /// @dev Documents the accepted limitation: resolving moves no tokens, so the escrow is resolved as
+    ///      usual, but while the token blocks the sender, the funds assigned to them cannot leave the
+    ///      contract. See docs/ai/DESIGN.md, "Limitaciones conocidas".
     function test_KnownLimitation_BlacklistedSenderLocksFunds() public {
         BlacklistERC20 usdc = new BlacklistERC20();
         _fund(address(usdc), sender);
         uint256 id = _create(address(usdc), AMOUNT);
         usdc.setBlocked(sender, true);
 
-        vm.expectRevert(abi.encodeWithSelector(BlacklistERC20.Blocked.selector, sender));
-        _act(Action.Cancel, id);
-        vm.expectRevert(abi.encodeWithSelector(BlacklistERC20.Blocked.selector, sender));
-        _act(Action.Reject, id);
-
-        vm.warp(_expiresAt(id));
-        vm.expectRevert(abi.encodeWithSelector(BlacklistERC20.Blocked.selector, sender));
-        _act(Action.RecoverExpired, id);
-
-        _assertStatus(id, IEscrow.Status.Pending);
-        assertEq(usdc.balanceOf(address(escrow)), AMOUNT);
-
-        // Once the token unblocks the sender, the funds can be recovered.
-        usdc.setBlocked(sender, false);
-        _act(Action.RecoverExpired, id);
-        assertEq(usdc.balanceOf(sender), INITIAL_BALANCE);
-    }
-
-    function test_KnownLimitation_BlacklistedBeneficiaryCanStillReject() public {
-        BlacklistERC20 usdc = new BlacklistERC20();
-        _fund(address(usdc), sender);
-        uint256 id = _create(address(usdc), AMOUNT);
-        usdc.setBlocked(beneficiary, true);
-
-        vm.expectRevert(abi.encodeWithSelector(BlacklistERC20.Blocked.selector, beneficiary));
-        _act(Action.Confirm, id);
-
         _act(Action.Reject, id);
         _assertStatus(id, IEscrow.Status.Rejected);
+
+        vm.expectRevert(abi.encodeWithSelector(BlacklistERC20.Blocked.selector, sender));
+        _withdrawAs(sender, id, AMOUNT, 0);
+        assertEq(usdc.balanceOf(address(escrow)), AMOUNT);
+
+        // Once the token unblocks the sender, the funds can be withdrawn.
+        usdc.setBlocked(sender, false);
+        _withdraw(id);
         assertEq(usdc.balanceOf(sender), INITIAL_BALANCE);
     }
 
-    /// @dev If the token blocks the escrow contract itself, every escrow of that token is frozen, in
-    ///      every direction, and no new one can be created. Escrows of other tokens are unaffected.
+    /// @dev A blocked beneficiary can still confirm, but cannot withdraw until unblocked; rejecting
+    ///      sends the funds back to the sender as usual.
+    function test_KnownLimitation_BlacklistedBeneficiaryCannotWithdraw() public {
+        BlacklistERC20 usdc = new BlacklistERC20();
+        _fund(address(usdc), sender);
+        uint256 confirmed = _create(address(usdc), AMOUNT);
+        uint256 rejected = _create(address(usdc), AMOUNT);
+        usdc.setBlocked(beneficiary, true);
+
+        _act(Action.Confirm, confirmed);
+        vm.expectRevert(abi.encodeWithSelector(BlacklistERC20.Blocked.selector, beneficiary));
+        _withdrawAs(beneficiary, confirmed, AMOUNT, 0);
+
+        _act(Action.Reject, rejected);
+        _withdraw(rejected);
+        assertEq(usdc.balanceOf(sender), INITIAL_BALANCE - AMOUNT);
+
+        usdc.setBlocked(beneficiary, false);
+        _withdraw(confirmed);
+        assertEq(usdc.balanceOf(beneficiary), AMOUNT);
+    }
+
+    /// @dev If the token blocks the escrow contract itself, no escrow of that token can be created or
+    ///      withdrawn from, though they can still be resolved. Escrows of other tokens are unaffected.
     function test_KnownLimitation_BlacklistedEscrowFreezesItsTokenEscrows() public {
         BlacklistERC20 usdc = new BlacklistERC20();
         _fund(address(usdc), sender);
@@ -189,38 +225,31 @@ contract EscrowTokensTest is EscrowTestBase {
         usdc.setBlocked(address(escrow), true);
         bytes memory blocked = abi.encodeWithSelector(BlacklistERC20.Blocked.selector, address(escrow));
 
-        Action[3] memory beforeExpiry = [Action.Cancel, Action.Confirm, Action.Reject];
-        for (uint256 a; a < beforeExpiry.length; ++a) {
-            vm.expectRevert(blocked);
-            _act(beforeExpiry[a], id);
-        }
         vm.expectRevert(blocked);
         _create(address(usdc), AMOUNT);
 
-        vm.warp(_expiresAt(id));
+        _act(Action.Cancel, id);
         vm.expectRevert(blocked);
-        _act(Action.RecoverExpired, id);
-        _assertStatus(id, IEscrow.Status.Pending);
+        _withdrawAs(sender, id, AMOUNT, 0);
+        assertEq(usdc.balanceOf(address(escrow)), AMOUNT);
 
         // The escrow of the standard token is not affected.
-        _act(Action.RecoverExpired, other);
-        _assertStatus(other, IEscrow.Status.Expired);
+        _act(Action.Cancel, other);
+        _withdraw(other);
+        assertEq(token.balanceOf(sender), INITIAL_BALANCE);
 
-        // Once the token unblocks the escrow, the funds can be recovered.
+        // Once the token unblocks the escrow, the funds can be withdrawn.
         usdc.setBlocked(address(escrow), false);
-        _act(Action.RecoverExpired, id);
+        _withdraw(id);
         assertEq(usdc.balanceOf(sender), INITIAL_BALANCE);
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Known limitation: tokens that take more from the payer than the amount transferred
+    // Tokens that take more from the payer than the amount transferred: each escrow pays the fee from
+    // its own balance, never from what backs other escrows
     // ---------------------------------------------------------------------------------------------
 
-    /// @dev Documents the accepted limitation: the escrow measures what it receives, but each payout
-    ///      assumes that sending `amount` takes exactly `amount` out of the escrow. A token that charges
-    ///      its fee to the payer, on top of the amount, takes more, and the last escrows of that token
-    ///      are left short. Only that token's escrows are affected. See docs/security.md.
-    function test_KnownLimitation_FeeOnTopTokenUnderfundsLaterEscrows() public {
+    function test_FeeOnTopToken_CannotConsumeOtherEscrowsBacking() public {
         FeeOnTopERC20 feeToken = new FeeOnTopERC20(100); // 1%
         address otherSender = makeAddr("otherSender");
         _fund(address(feeToken), sender);
@@ -230,18 +259,62 @@ contract EscrowTokensTest is EscrowTestBase {
         uint256 first = _create(address(feeToken), AMOUNT);
         vm.prank(otherSender);
         uint256 second = escrow.createEscrow(address(feeToken), beneficiary, AMOUNT);
-        assertEq(escrow.getEscrow(first).amount, AMOUNT);
-        assertEq(escrow.getEscrow(second).amount, AMOUNT);
         assertEq(feeToken.balanceOf(address(escrow)), 2 * AMOUNT);
-
-        // The first payout takes the amount plus 1% from the escrow, so the second one is short.
         _act(Action.Confirm, first);
-        uint256 left = AMOUNT - AMOUNT / 100;
-        assertEq(feeToken.balanceOf(address(escrow)), left);
+        _act(Action.Confirm, second);
+
+        // Withdrawing the whole amount would take the amount plus 1% out of the contract, the 1% from
+        // the second escrow's backing: it reverts, and nothing moves.
+        vm.expectRevert(abi.encodeWithSelector(IEscrow.ExcessiveDebit.selector, first, AMOUNT, AMOUNT + AMOUNT / 100));
+        _withdrawAs(beneficiary, first, AMOUNT, 0);
+        assertEq(feeToken.balanceOf(address(escrow)), 2 * AMOUNT);
+        assertEq(feeToken.balanceOf(beneficiary), 0);
+
+        // Asking for less leaves room for the fee: what can be withdrawn is what the balance can pay
+        // for, fee included. The dust left over (1 wei) is not enough for another transfer plus its fee.
+        uint256 transferAmount = AMOUNT * 10_000 / 10_100;
+        uint256 debited = transferAmount + transferAmount / 100;
+        assertLe(debited, AMOUNT);
+        vm.expectEmit(address(escrow));
+        emit IEscrow.EscrowWithdrawn(first, debited, transferAmount);
+        _withdraw(first, transferAmount, transferAmount);
+        assertEq(escrow.getEscrow(first).withdrawn, debited);
+
+        // The second escrow is still fully backed, and pays out the same way.
+        assertEq(feeToken.balanceOf(address(escrow)), 2 * AMOUNT - debited);
+        assertGe(feeToken.balanceOf(address(escrow)), _balance(second));
+        _withdraw(second, transferAmount, transferAmount);
+        assertEq(feeToken.balanceOf(beneficiary), 2 * transferAmount);
+        assertEq(feeToken.balanceOf(address(escrow)), _balance(first) + _balance(second));
+    }
+
+    /// @dev Tokens donated to the contract are not anyone's: they cannot pay a withdrawal's fee either.
+    function test_FeeOnTopToken_DonationsDoNotPayTheFee() public {
+        FeeOnTopERC20 feeToken = new FeeOnTopERC20(100); // 1%
+        _fund(address(feeToken), sender);
+        uint256 id = _create(address(feeToken), AMOUNT);
+        _act(Action.Cancel, id);
+        feeToken.mint(address(escrow), AMOUNT / 2);
+
+        vm.expectRevert(abi.encodeWithSelector(IEscrow.ExcessiveDebit.selector, id, AMOUNT, AMOUNT + AMOUNT / 100));
+        _withdrawAs(sender, id, AMOUNT, 0);
+        assertEq(feeToken.balanceOf(address(escrow)), AMOUNT + AMOUNT / 2);
+    }
+
+    /// @dev With nothing else of the token in the contract, the fee cannot be paid at all and the token
+    ///      itself reverts. Either way, asking for less is what works.
+    function test_FeeOnTopToken_OnlyEscrowOfTokenRevertsInToken() public {
+        FeeOnTopERC20 feeToken = new FeeOnTopERC20(100); // 1%
+        _fund(address(feeToken), sender);
+        uint256 id = _create(address(feeToken), AMOUNT);
+        _act(Action.Cancel, id);
 
         vm.expectRevert(
-            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, address(escrow), left, AMOUNT)
+            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, address(escrow), 0, AMOUNT / 100)
         );
-        _act(Action.Confirm, second);
+        _withdrawAs(sender, id, AMOUNT, 0);
+
+        _withdraw(id, AMOUNT * 10_000 / 10_100, 0);
+        assertEq(feeToken.balanceOf(address(escrow)), _balance(id));
     }
 }

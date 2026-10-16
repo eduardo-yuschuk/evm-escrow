@@ -112,7 +112,7 @@ export async function mined(client: TestClient, hash: Hash): Promise<Transaction
   return receipt;
 }
 
-function deployedAddress(receipt: TransactionReceipt): Address {
+export function deployedAddress(receipt: TransactionReceipt): Address {
   if (!receipt.contractAddress) throw new Error(`${receipt.transactionHash} deployed nothing`);
   return receipt.contractAddress.toLowerCase() as Address;
 }
@@ -144,6 +144,31 @@ export async function deployContracts(client: TestClient): Promise<Deployment> {
       }),
     ),
   );
+  const deployment: Deployment = {
+    chainId: foundry.id,
+    escrow,
+    token,
+    cancelWindow: Number(CANCEL_WINDOW),
+    ttl: Number(TTL),
+    startBlock: start.number,
+    startBlockHash: start.hash.toLowerCase() as Hash,
+  };
+  await fundForEscrow(client, deployment, token);
+  return deployment;
+}
+
+export interface CreatedEscrow {
+  id: bigint;
+  receipt: TransactionReceipt;
+}
+
+/** Gives alice and bob `amount` of a test token and an unlimited allowance for the escrow. */
+export async function fundForEscrow(
+  client: TestClient,
+  deployment: Deployment,
+  token: Address,
+  amount = 1_000_000n * ONE_TOKEN,
+): Promise<void> {
   for (const account of [alice, bob]) {
     await mined(
       client,
@@ -152,7 +177,7 @@ export async function deployContracts(client: TestClient): Promise<Deployment> {
         address: token,
         abi: mockErc20Abi,
         functionName: "mint",
-        args: [account.address, 1_000_000n * ONE_TOKEN],
+        args: [account.address, amount],
       }),
     );
     await mined(
@@ -162,32 +187,20 @@ export async function deployContracts(client: TestClient): Promise<Deployment> {
         address: token,
         abi: mockErc20Abi,
         functionName: "approve",
-        args: [escrow, maxUint256],
+        args: [deployment.escrow, maxUint256],
       }),
     );
   }
-  return {
-    chainId: foundry.id,
-    escrow,
-    token,
-    cancelWindow: Number(CANCEL_WINDOW),
-    ttl: Number(TTL),
-    startBlock: start.number,
-    startBlockHash: start.hash.toLowerCase() as Hash,
-  };
 }
 
-export interface CreatedEscrow {
-  id: bigint;
-  receipt: TransactionReceipt;
-}
-
+/** Creates an escrow of `token`, the deployment's mock token by default. */
 export async function createEscrow(
   client: TestClient,
   deployment: Deployment,
   sender: LocalAccount,
   beneficiary: Address,
   amount = ONE_TOKEN,
+  token: Address = deployment.token,
 ): Promise<CreatedEscrow> {
   const receipt = await mined(
     client,
@@ -196,7 +209,7 @@ export async function createEscrow(
       address: deployment.escrow,
       abi: escrowAbi,
       functionName: "createEscrow",
-      args: [deployment.token, beneficiary, amount],
+      args: [token, beneficiary, amount],
     }),
   );
   const [created] = parseEventLogs({
@@ -229,9 +242,31 @@ export async function act(
   );
 }
 
+/** The holder of a resolved escrow withdraws `transferAmount`. */
+export async function withdraw(
+  client: TestClient,
+  deployment: Deployment,
+  holder: LocalAccount,
+  id: bigint,
+  transferAmount: bigint,
+  minReceived = 0n,
+): Promise<TransactionReceipt> {
+  return mined(
+    client,
+    await client.writeContract({
+      account: holder,
+      address: deployment.escrow,
+      abi: escrowAbi,
+      functionName: "withdraw",
+      args: [id, transferAmount, minReceived],
+    }),
+  );
+}
+
 /**
- * Creates `count` escrows, alternating the direction, and resolves three out of four: confirmed,
- * rejected, cancelled, left Pending. Mines `emptyBlocks` empty blocks after each escrow.
+ * Creates `count` escrows of one token, alternating the direction, and resolves three out of four:
+ * confirmed and fully withdrawn by the beneficiary, rejected and half withdrawn by the sender,
+ * cancelled and not withdrawn, left Pending. Mines `emptyBlocks` empty blocks after each escrow.
  */
 export async function createActivity(
   client: TestClient,
@@ -245,9 +280,11 @@ export async function createActivity(
     switch (i % 4) {
       case 0:
         await act(client, deployment, beneficiary, "confirm", id);
+        await withdraw(client, deployment, beneficiary, id, ONE_TOKEN);
         break;
       case 1:
         await act(client, deployment, beneficiary, "reject", id);
+        await withdraw(client, deployment, sender, id, ONE_TOKEN / 2n);
         break;
       case 2:
         await act(client, deployment, sender, "cancel", id);

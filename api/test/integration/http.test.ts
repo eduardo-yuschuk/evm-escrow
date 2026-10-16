@@ -20,6 +20,7 @@ import {
   ONE_TOKEN,
   startAnvil,
   TTL,
+  withdraw,
   type Anvil,
 } from "../support/chain.js";
 import { createTestDatabase, silentLog, type TestDatabase } from "../support/db.js";
@@ -73,7 +74,11 @@ let db: TestDatabase;
 let deployment: Deployment;
 let context: IndexerContext;
 let app: FastifyInstance;
-let released: { created: TransactionReceipt; confirmed: TransactionReceipt };
+let released: {
+  created: TransactionReceipt;
+  confirmed: TransactionReceipt;
+  withdrawals: TransactionReceipt[];
+};
 
 const listIds = async (query: string) =>
   (await get<Page>(app, `/escrows?${query}`)).body.items.map((item) => item.id);
@@ -91,7 +96,8 @@ beforeAll(async () => {
 /**
  * One escrow in each effective status, ids in creation order:
  * 1 Expired, 2 ExpiredRecoverable, 3 Released, 4 Rejected, 5 CancelledBySender, 6 and 7 Pending.
- * All from alice to bob, except 4 and 6, from bob to alice.
+ * All from alice to bob, except 4 and 6, from bob to alice. 3 is withdrawn in two parts, 1 fully,
+ * and the other resolved ones not at all.
  */
 beforeAll(async () => {
   const { client } = anvil;
@@ -104,11 +110,16 @@ beforeAll(async () => {
   await client.increaseTime({ seconds: Number(TTL) });
   await client.mine({ blocks: 1 });
   await act(client, deployment, alice, "recoverExpired", expired.id);
+  await withdraw(client, deployment, alice, expired.id, ONE_TOKEN);
 
   const toRelease = await create(alice, bob, 3n);
   released = {
     created: toRelease.receipt,
     confirmed: await act(client, deployment, bob, "confirm", toRelease.id),
+    withdrawals: [
+      await withdraw(client, deployment, bob, toRelease.id, ONE_TOKEN, ONE_TOKEN),
+      await withdraw(client, deployment, bob, toRelease.id, 2n * ONE_TOKEN, 2n * ONE_TOKEN),
+    ],
   };
   await act(client, deployment, alice, "reject", (await create(bob, alice, 4n)).id);
   await act(client, deployment, alice, "cancel", (await create(alice, bob, 5n)).id);
@@ -130,9 +141,20 @@ describe("GET /escrows/:id", () => {
     const { client } = anvil;
     const createdAt = (await client.getBlock({ blockNumber: released.created.blockNumber }))
       .timestamp;
-    const resolvedAt = (await client.getBlock({ blockNumber: released.confirmed.blockNumber }))
-      .timestamp;
+    const timestampOf = async (receipt: TransactionReceipt) =>
+      Number((await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp);
+    const resolvedAt = await timestampOf(released.confirmed);
     const now = (await client.getBlock()).timestamp;
+    const withdrawals = [];
+    for (const [i, receipt] of released.withdrawals.entries()) {
+      const tokens = String(BigInt(i + 1) * ONE_TOKEN);
+      withdrawals.push({
+        txHash: receipt.transactionHash,
+        withdrawnAt: await timestampOf(receipt),
+        debited: tokens,
+        received: tokens,
+      });
+    }
 
     const { statusCode, body } = await get<EscrowView>(app, "/escrows/3");
 
@@ -143,19 +165,42 @@ describe("GET /escrows/:id", () => {
       beneficiary: bob.address,
       token: getAddress(deployment.token),
       amount: String(3n * ONE_TOKEN),
+      withdrawn: String(3n * ONE_TOKEN),
+      withdrawable: "0",
       createdAt: Number(createdAt),
       cancelDeadline: Number(createdAt + CANCEL_WINDOW),
       expiresAt: Number(createdAt + TTL),
       onchainStatus: "Released",
       status: "Released",
+      holder: bob.address,
       canCancel: false,
       canConfirm: false,
       canReject: false,
       canRecover: false,
+      canWithdraw: false,
       createdTx: released.created.transactionHash,
       resolvedTx: released.confirmed.transactionHash,
-      resolvedAt: Number(resolvedAt),
+      resolvedAt,
+      withdrawals,
       now: Number(now),
+    });
+  });
+
+  it("reports what the holder of a resolved escrow can still withdraw", async () => {
+    expect((await get<EscrowView>(app, "/escrows/4")).body).toMatchObject({
+      onchainStatus: "Rejected",
+      holder: bob.address,
+      withdrawn: "0",
+      withdrawable: String(4n * ONE_TOKEN),
+      canWithdraw: true,
+      withdrawals: [],
+    });
+    expect((await get<EscrowView>(app, "/escrows/1")).body).toMatchObject({
+      onchainStatus: "Expired",
+      holder: alice.address,
+      withdrawn: String(ONE_TOKEN),
+      withdrawable: "0",
+      canWithdraw: false,
     });
   });
 
@@ -167,8 +212,12 @@ describe("GET /escrows/:id", () => {
       canConfirm: true,
       canReject: true,
       canRecover: false,
+      holder: null,
+      withdrawable: "0",
+      canWithdraw: false,
       resolvedTx: null,
       resolvedAt: null,
+      withdrawals: [],
     });
   });
 
@@ -207,6 +256,17 @@ describe("GET /escrows", () => {
     expect(statusCode).toBe(200);
     expect(body.items.map((item) => item.id)).toEqual(["7", "6", "5", "4", "3", "2", "1"]);
     expect(body).toMatchObject({ limit: 20, offset: 0, total: 7 });
+  });
+
+  it("returns each item as /escrows/:id does, withdrawals included", async () => {
+    const { body } = await get<Page>(app, "/escrows");
+    for (const item of body.items) {
+      expect(item).toEqual({
+        ...(await get<EscrowView>(app, `/escrows/${item.id}`)).body,
+        now: item.now,
+      });
+    }
+    expect(body.items.find((item) => item.id === "3")?.withdrawals).toHaveLength(2);
   });
 
   it("treats empty parameters as absent, like the form /escrows?sender=&beneficiary=&status=", async () => {
@@ -342,6 +402,14 @@ describe("unavailable dependencies", () => {
           },
         });
       }
+      expect(await get<ErrorBody>(offline, "/escrows/1/max-withdrawal")).toEqual({
+        statusCode: 503,
+        body: {
+          statusCode: 503,
+          error: "Service Unavailable",
+          message: "Cannot simulate the withdrawal against the chain",
+        },
+      });
       expect(await get<Health>(offline, "/health")).toMatchObject({
         statusCode: 503,
         body: { status: "degraded", db: "ok", rpc: "error", chainHead: null, lag: null },
@@ -355,7 +423,7 @@ describe("unavailable dependencies", () => {
     const pool = createPool("postgres://escrow:escrow@127.0.0.1:1/escrow_test", silentLog);
     const offline = server(pool, anvil.url);
     try {
-      for (const url of ["/escrows/1", "/escrows"]) {
+      for (const url of ["/escrows/1", "/escrows", "/escrows/1/max-withdrawal"]) {
         expect(await get<ErrorBody>(offline, url)).toEqual({
           statusCode: 503,
           body: {
@@ -375,13 +443,17 @@ describe("unavailable dependencies", () => {
     }
   });
 
-  it("is degraded before the indexer starts", async () => {
+  it("is degraded before the indexer starts, with no contract to simulate against", async () => {
     const empty = await createTestDatabase();
     const fresh = server(empty.pool, anvil.url);
     try {
       expect(await get<Health>(fresh, "/health")).toMatchObject({
         statusCode: 503,
         body: { status: "degraded", db: "ok", rpc: "ok", lastIndexedBlock: null, lag: null },
+      });
+      expect(await get<ErrorBody>(fresh, "/escrows/1/max-withdrawal")).toMatchObject({
+        statusCode: 503,
+        body: { message: "The indexer has not started yet" },
       });
     } finally {
       await fresh.close();
