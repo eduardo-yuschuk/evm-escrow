@@ -1,0 +1,19 @@
+# Debug override for the Monad testnet stack: the API runs from ./api/src with tsx and the Node
+# inspector open, for VS Code to attach (.vscode/launch.json, "Attach to API (Monad)"). Its own port,
+# so that it can run next to the local stack in debug mode.
+# Usage: docker compose -f docker-compose.monad.yml -f docker-compose.monad.debug.yml up --build
+
+services:
+  api:
+    build:
+      target: dev
+    image: evm-escrow/api:dev
+    # Starts as root; the entrypoint drops to the owner of ./api.
+    user: root
+    entrypoint: [api-entrypoint]
+    command: [node, --inspect=0.0.0.0:9229, --import, tsx, src/index.ts]
+    volumes:
+      - ./api:/app
+    ports:
+      # The inspector runs arbitrary code: published on 127.0.0.1 only, like the other ports.
+      - 127.0.0.1:${MONAD_API_DEBUG_PORT:-9230}:9229

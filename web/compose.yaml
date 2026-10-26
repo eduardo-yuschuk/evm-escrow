@@ -1,0 +1,29 @@
+# Web client: a static page that lists the escrows, served by nginx, which also proxies /api/ to the
+# API (the API sends no CORS headers). An override, so that it runs next to any of the stacks:
+#
+#   docker compose -f docker-compose.yml -f web/compose.yaml up --build                 local, :8080
+#   docker compose -f docker-compose.sepolia.yml -f web/compose.yaml up --build         Sepolia
+#   docker compose -f docker-compose.monad.yml -f web/compose.yaml up --build           Monad testnet
+#
+# Paths are relative to the first file, the root of the repo. With two stacks up at the same time,
+# give the second one another port: WEB_PORT=8082 docker compose ...
+
+services:
+  web:
+    build:
+      context: ./web
+    image: evm-escrow/web:latest
+    environment:
+      # Inside the compose network: the api service of whichever stack this runs with.
+      API_UPSTREAM: http://api:3000
+    ports:
+      - 127.0.0.1:${WEB_PORT:-8080}:8080
+    healthcheck:
+      test: [CMD, wget, --quiet, --spider, http://127.0.0.1:8080/]
+      interval: 2s
+      timeout: 5s
+      retries: 3
+    # Started, not healthy: the page also shows the API while it is degraded or still indexing.
+    depends_on:
+      api:
+        condition: service_started

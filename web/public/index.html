@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Escrows</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Escrows</h1>
+      <p id="health" class="muted">Consultando la API…</p>
+    </header>
+
+    <main>
+      <div class="toolbar">
+        <span id="summary" class="muted"></span>
+        <button id="refresh" type="button">Actualizar</button>
+      </div>
+
+      <p id="error" class="error" hidden></p>
+      <ol id="escrows"></ol>
+
+      <nav class="pager">
+        <button id="prev" type="button" disabled>← Anteriores</button>
+        <button id="next" type="button" disabled>Siguientes →</button>
+      </nav>
+    </main>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>

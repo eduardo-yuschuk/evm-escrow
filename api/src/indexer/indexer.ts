@@ -33,6 +33,8 @@ export async function indexNextBatch({
   const checkpoint = await readCheckpoint(pool);
   const head = await client.getBlockNumber();
 
+  console.debug(`Checkpoint: ${checkpoint}, Head: ${head}`);
+
   if (head < checkpoint) {
     // Either a lagging RPC node, which is worth waiting for, or another chain, which is fatal.
     await verifyDeployment(client, deployment);

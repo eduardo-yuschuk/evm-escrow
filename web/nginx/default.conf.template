@@ -1,0 +1,19 @@
+server {
+    listen 8080;
+    root /usr/share/nginx/html;
+
+    # Docker's DNS. With the upstream in a variable, nginx resolves it on each request instead of
+    # once on start: it starts even if the api container is not up yet, and follows it if it restarts.
+    resolver 127.0.0.11 valid=10s;
+    set $api ${API_UPSTREAM};
+
+    # /api/escrows?limit=20 -> http://api:3000/escrows?limit=20
+    location /api/ {
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass $api;
+    }
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}

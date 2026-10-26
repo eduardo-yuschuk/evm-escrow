@@ -1,9 +1,9 @@
 {
   "cancelWindow": 60,
   "chainId": 10143,
-  "escrow": "0x168f4F3b56166B772691253338C7e75eD200Df29",
-  "startBlock": 71338477,
-  "startBlockHash": "0xf8bdc7dc9161a1353c7105cfd1f4c52e10b76f5fce5e08f5cce28ade7b65e935",
-  "token": "0x9a3b2D1C29c049F65875b6DfA0Cf869485625055",
+  "escrow": "0x72ac80d30614f24E291a09598F97887E9e9202f7",
+  "startBlock": 74423795,
+  "startBlockHash": "0x6d72519a22c5ca40990cb71aad2f73672f813ea59b3b0ee3c0515d4ed7a5d75e",
+  "token": "0xbe63Df1a56933F9F48c6eDa64a7C4B152EdD8B6E",
   "ttl": 120
 }
